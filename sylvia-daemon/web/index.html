@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sylvia — Control Panel</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+	<h1>Sylvia <span class="tag">control panel</span></h1>
+	<nav>
+		<a href="/" class="active">Status</a>
+		<a href="/resources.html">Resources</a>
+		<a href="/modules.html">Modules</a>
+	</nav>
+</header>
+<main>
+	<div class="grid">
+		<div class="card">
+			<h2>Network</h2>
+			<dl class="kv" id="net-kv"><dd class="muted">loading…</dd></dl>
+		</div>
+		<div class="card">
+			<h2>Netgate</h2>
+			<dl class="kv" id="gate-kv"><dd class="muted">loading…</dd></dl>
+			<div class="toolbar" style="margin:14px 0 0">
+				<button id="btn-hold" class="danger">Pause managed traffic</button>
+				<button id="btn-resume">Resume managed traffic</button>
+			</div>
+			<div class="note">Manual hold persists until you resume here — the watcher only
+			auto-resumes when <code>resumeOnReconnect</code> is enabled (default: off).</div>
+		</div>
+		<div class="card">
+			<h2>Daemon</h2>
+			<dl class="kv" id="health-kv"><dd class="muted">loading…</dd></dl>
+		</div>
+		<div class="card">
+			<h2>Managed services</h2>
+			<div id="services"><div class="empty">loading…</div></div>
+		</div>
+	</div>
+</main>
+<div id="toast"></div>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+
+function toast(msg, isError) {
+	const t = $("#toast");
+	t.textContent = msg;
+	t.className = "show" + (isError ? " error" : "");
+	setTimeout(() => { t.className = ""; }, 3200);
+}
+
+async function jget(path) {
+	const r = await fetch(path);
+	if (!r.ok) throw new Error(`${path}: ${r.status}`);
+	return r.json();
+}
+async function jpost(path, body) {
+	const r = await fetch(path, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body ?? {})
+	});
+	const j = await r.json().catch(() => ({}));
+	if (!r.ok) throw new Error(j.error || `${path}: ${r.status}`);
+	return j;
+}
+
+function kv(pairs) {
+	return pairs
+		.map(([k, v]) => `<dt>${k}</dt><dd>${v ?? "—"}</dd>`)
+		.join("");
+}
+function esc(s) {
+	return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function badge(cls, label) { return `<span class="badge ${cls}">${label}</span>`; }
+function when(ms) { return ms ? new Date(ms).toLocaleString() : null; }
+
+let lastState = "run";
+
+async function refreshNetwork() {
+	try {
+		const n = await jget("/api/network");
+		const tb = { wifi: "ok", cellular: "warn", none: "bad", unknown: "neutral" }[n.transport] ?? "neutral";
+		$("#net-kv").innerHTML = kv([
+			["Transport", badge(tb, esc(n.transport ?? "unknown"))],
+			["Metered", n.metered ? badge("warn", "yes") : badge("ok", "no")],
+			["Interface", esc(n.iface)],
+			["Source", esc(n.source)],
+			["Checked", when(n.at)]
+		]);
+	} catch (e) {
+		$("#net-kv").innerHTML = kv([["Error", esc(e.message)]]);
+	}
+}
+
+async function refreshGate() {
+	try {
+		const g = await jget("/api/netgate");
+		lastState = g.held ? "held" : "run";
+		$("#gate-kv").innerHTML = kv([
+			["Managed traffic", g.held ? badge("bad", "HELD") : badge("ok", "running")],
+			["Reason", esc(g.reason)],
+			["Since", when(g.heldSince)],
+			["Services held", String(g.count)],
+			["Auto-gate", g.gateEnabled ? badge("ok", "on") : badge("neutral", "off")],
+			["Resume on reconnect", g.resumeOnReconnect ? badge("ok", "yes") : badge("neutral", "no (locked)")]
+		]);
+		const list = g.services ?? [];
+		$("#services").innerHTML = list.length === 0
+			? `<div class="empty">no services registered — always-mode modules<br>register here in step 6</div>`
+			: `<table><tr><th>Name</th><th>PGID</th><th>Note</th></tr>` +
+				list.map((s) => `<tr><td>${esc(s.name)}</td><td class="mono">${s.pgid}</td><td class="muted">${esc(s.note ?? "")}</td></tr>`).join("") +
+				`</table>`;
+	} catch (e) {
+		$("#gate-kv").innerHTML = kv([["Error", esc(e.message)]]);
+	}
+}
+
+async function refreshHealth() {
+	try {
+		const h = await jget("/api/health");
+		const up = Math.floor((h.uptimeMs ?? 0) / 1000);
+		const upStr = up >= 3600 ? `${Math.floor(up / 3600)}h ${Math.floor(up / 60) % 60}m` : up >= 60 ? `${Math.floor(up / 60)}m ${up % 60}s` : `${up}s`;
+		$("#health-kv").innerHTML = kv([
+			["Status", badge("ok", "healthy")],
+			["Uptime", upStr],
+			["PID", String(h.pid)],
+			["Poll interval", `${Math.round((h.pollIntervalMs ?? 0) / 1000)}s`],
+			["State dir", esc(h.stateDir)]
+		]);
+	} catch (e) {
+		$("#health-kv").innerHTML = kv([["Status", badge("bad", "unreachable")], ["Error", esc(e.message)]]);
+	}
+}
+
+$("#btn-hold").onclick = async () => {
+	try { await jpost("/api/netgate/hold", { reason: "manual (control panel)" }); toast("Managed traffic paused."); refreshGate(); }
+	catch (e) { toast(e.message, true); }
+};
+$("#btn-resume").onclick = async () => {
+	try { await jpost("/api/netgate/resume", { reason: "manual (control panel)" }); toast("Managed traffic resumed."); refreshGate(); }
+	catch (e) { toast(e.message, true); }
+};
+
+async function refreshAll() {
+	await Promise.all([refreshNetwork(), refreshGate(), refreshHealth()]);
+}
+refreshAll();
+setInterval(refreshAll, 5000);
+</script>
+</body>
+</html>

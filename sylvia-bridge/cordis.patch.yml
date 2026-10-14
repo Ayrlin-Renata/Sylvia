@@ -1,0 +1,23 @@
+# sylvia-bridge bundle layer.
+#
+# Applied when a profile lists this package in `dsh.profile.bundles` — which
+# `dsh plugin --profile web add <package>` does automatically because
+# package.json declares `dsh.bundle`.
+#
+# Config (all optional, defaults shown):
+#   enabled: true             — master switch for harness gating.
+#   onMetered: pause          — 'pause' gates agents on metered/no-network; 'allow' observes only.
+#   pauseMode: finish-stream  — 'finish-stream' lets the in-flight model stream commit, then
+#                               cancels (keepInbox); 'immediate' cancels the running turn at once.
+#   resumeOnReconnect: false  — on return to unmetered, do NOT auto-release held work (locked default).
+#   notifyPausedWork: true    — on return to unmetered, inject a pending notice describing the pause
+#                               (duration + held-work count) so the next message carries the context.
+#   onUnknown: allow          — daemon unreachable: 'allow' keeps the harness running (desktop-safe);
+#                               'pause' fails closed.
+#   daemonUrl: http://127.0.0.1:3090  — sylvia-daemon control API.
+#   stateFile: ~/.sylvia/netstate.json — fallback when the daemon HTTP API is down.
+#   pollIntervalMs: 10000     — how often to sample network state.
+#   staleAfterMs: 60000       — older samples count as unknown.
+- insert:
+    - id: sylvia-bridge
+      name: sylvia-bridge

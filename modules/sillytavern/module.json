@@ -1,0 +1,25 @@
+{
+	"id": "sillytavern",
+	"name": "SillyTavern",
+	"behavior": "manual",
+	"frontend": "http://127.0.0.1:8000",
+	"settingsSchema": [
+		{ "key": "port", "type": "port", "label": "Port", "default": 8000 },
+		{ "key": "bind", "type": "ip", "label": "Bind IP", "default": "127.0.0.1" },
+		{ "key": "whitelist", "type": "ip-list", "label": "Whitelisted IPs", "default": ["127.0.0.1"] },
+		{ "key": "enableApi", "type": "bool", "label": "Expose API", "default": false },
+		{ "key": "theme", "type": "enum", "label": "Theme", "options": ["dark", "light"], "default": "dark" }
+	],
+	"backup": {
+		"enabled": true,
+		"remote": "gdrive:sylvia/backups/sillytavern",
+		"paths": ["~/SillyTavern/data", "~/SillyTavern/config"]
+	},
+	"scripts": {
+		"status": "scripts/status.sh",
+		"on": "scripts/on.sh",
+		"off": "scripts/off.sh",
+		"backup": "scripts/backup.sh",
+		"settingsEdit": "scripts/settings-edit.sh"
+	}
+}

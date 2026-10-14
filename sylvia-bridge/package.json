@@ -1,0 +1,38 @@
+{
+	"name": "sylvia-bridge",
+	"version": "0.1.0",
+	"description": "DeepSeek Harness plugin: network-aware harness gating — pause/cancel agent work on metered data and inject offline-gap + paused-work context on reconnect.",
+	"license": "MIT",
+	"type": "module",
+	"main": "./lib/index.js",
+	"exports": {
+		".": "./lib/index.js",
+		"./cordis.patch.yml": "./cordis.patch.yml",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"lib",
+		"cordis.patch.yml",
+		"README.md"
+	],
+	"keywords": [
+		"deepseek",
+		"deepseek-harness",
+		"dsh",
+		"dsh-plugin",
+		"cordis",
+		"sylvia",
+		"network-gate"
+	],
+	"dsh": {
+		"bundle": {
+			"patch": "./cordis.patch.yml"
+		}
+	},
+	"scripts": {
+		"test": "node --test \"test/*.test.mjs\""
+	},
+	"engines": {
+		"node": ">=22.19"
+	}
+}

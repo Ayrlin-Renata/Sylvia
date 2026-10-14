@@ -1,0 +1,17 @@
+{
+  "name": "sylvia-daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sylvia daemon — network detection, netgate (managed-traffic hold), and the loopback control API that sylvia-mcp, the DSH bridge plugin, and the web panel all consume. Zero runtime dependencies.",
+  "bin": {
+    "sylvia-daemon": "index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

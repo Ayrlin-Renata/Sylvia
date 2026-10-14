@@ -1,0 +1,16 @@
+{
+	"id": "mdns",
+	"name": "mDNS responder",
+	"behavior": "always",
+	"frontend": null,
+	"settingsSchema": [
+		{ "key": "serviceNames", "type": "string", "label": "Advertised service names (comma-separated)", "default": "" },
+		{ "key": "interface", "type": "string", "label": "Interface (empty = all)", "default": "" }
+	],
+	"backup": { "enabled": false },
+	"scripts": {
+		"status": "scripts/status.sh",
+		"on": "scripts/on.sh",
+		"off": "scripts/off.sh"
+	}
+}

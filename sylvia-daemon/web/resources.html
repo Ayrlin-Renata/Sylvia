@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sylvia — Resources</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+	<h1>Sylvia <span class="tag">resources</span></h1>
+	<nav>
+		<a href="/">Status</a>
+		<a href="/resources.html" class="active">Resources</a>
+		<a href="/modules.html">Modules</a>
+	</nav>
+</header>
+<main>
+	<div class="toolbar">
+		<input type="search" id="q" placeholder="Search name / id / ip…">
+		<button id="btn-refresh">Refresh</button>
+		<span style="flex:1"></span>
+		<button id="btn-prune" class="danger">Prune now</button>
+	</div>
+
+	<h3>Networks <span class="muted small" id="cnt-networks"></span></h3>
+	<div id="tbl-networks"></div>
+
+	<h3>Devices <span class="muted small" id="cnt-hosts"></span></h3>
+	<div id="tbl-hosts"></div>
+
+	<h3>Resources <span class="muted small" id="cnt-resources"></span></h3>
+	<div id="tbl-resources"></div>
+
+	<h3>Policy</h3>
+	<div class="note">Per-owner defaults and per-type rules merge with each entity's own
+		permission using <b>strictest-wins</b> (hidden &gt; ask &gt; allow). Type rules can only tighten.</div>
+	<div id="policy-editor"></div>
+</main>
+<div id="toast"></div>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const GATES = ["", "allow", "ask", "hidden"];
+
+function toast(msg, isError) {
+	const t = $("#toast");
+	t.textContent = msg;
+	t.className = "show" + (isError ? " error" : "");
+	setTimeout(() => { t.className = ""; }, 3500);
+}
+async function jget(path) {
+	const r = await fetch(path);
+	if (!r.ok) throw new Error(`${path}: ${r.status}`);
+	return r.json();
+}
+async function jpost(path, body, method = "POST") {
+	const r = await fetch(path, {
+		method,
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body ?? {})
+	});
+	const j = await r.json().catch(() => ({}));
+	if (!r.ok) throw new Error(j.error || `${path}: ${r.status}`);
+	return j;
+}
+function esc(s) {
+	return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function ago(ms) {
+	if (!ms) return "—";
+	const d = Date.now() - ms;
+	if (d < 60_000) return `${Math.floor(d / 1000)}s ago`;
+	if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ago`;
+	if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h ago`;
+	return `${Math.floor(d / 86_400_000)}d ago`;
+}
+const CONF = { confirmed: "ok", corroborated: "warn", provisional: "neutral" };
+
+function gateBadge(g) {
+	const cls = g === "allow" ? "ok" : g === "ask" ? "warn" : "bad";
+	return `<span class="badge ${cls}">${esc(g)}</span>`;
+}
+
+async function label(kind, id, patch) {
+	await jpost(`/api/registry/${kind}/label`, { id, ...patch });
+	toast("Saved.");
+	load();
+}
+
+function entityRow(kind, cells, e) {
+	const owner = e.owner ?? "";
+	const perm = e.permission ?? "";
+	return `<tr data-id="${esc(e.id)}">${cells}
+		<td><select data-field="owner">
+			<option value="" ${owner === "" ? "selected" : ""}>unlabeled</option>
+			<option value="me" ${owner === "me" ? "selected" : ""}>me</option>
+			${owner && owner !== "me" ? `<option value="${esc(owner)}" selected>${esc(owner)}</option>` : ""}
+			<option value="__new">+ person…</option>
+		</select></td>
+		<td><select data-field="permission">
+			${GATES.map((g) => `<option value="${g}" ${perm === g ? "selected" : ""}>${g || "(inherit)"}</option>`).join("")}
+		</select></td>
+		<td>${gateBadge(e.__gate)}</td>
+		<td class="muted small">${ago(e.lastSeen)}</td>
+		<td class="mono small">${e.sightings ?? "—"}</td>
+	</tr>`;
+}
+
+function wireRowHandlers(kind, root) {
+	root.querySelectorAll("select[data-field]").forEach((sel) => {
+		sel.onchange = async () => {
+			const tr = sel.closest("tr");
+			const id = tr.dataset.id;
+			const field = sel.dataset.field;
+			let val = sel.value;
+			if (field === "owner" && val === "__new") {
+				val = prompt("Owner label (person's name):")?.trim();
+				if (!val) { sel.value = ""; return; }
+			}
+			try {
+				await label(kind, id, { [field]: val === "" ? null : val });
+			} catch (e) { toast(e.message, true); sel.value = ""; }
+		};
+	});
+}
+
+function renderTable(sel, cntSel, kind, items, header, cells) {
+	$(cntSel).textContent = items.length ? `(${items.length})` : "(none visible — label entities to retain them)";
+	if (items.length === 0) {
+		$(sel).innerHTML = `<div class="note">Nothing here yet. Unlabeled devices are hidden by policy
+			(default) and pruned after 7 days — they appear here once <code>sylvia-mcp</code> or the
+			discovery scanner records sightings, and stay once labeled.</div>`;
+		return;
+	}
+	$(sel).innerHTML = `<table><tr>${header}<th>Owner</th><th>Perm</th><th>Gate</th><th>Last seen</th><th>Sights</th></tr>` +
+		items.map((e) => entityRow(kind, cells(e), e)).join("") + `</table>`;
+	wireRowHandlers(kind, $(sel));
+}
+
+const filter = (e) => {
+	const q = $("#q").value.trim().toLowerCase();
+	if (!q) return true;
+	return [e.name, e.id, e.ssid, ...(e.ips ?? [])].filter(Boolean).some((s) => String(s).toLowerCase().includes(q));
+};
+
+async function load() {
+	try {
+		const [networks, hosts, resources] = await Promise.all([
+			jget("/api/registry/networks"),
+			jget("/api/registry/hosts"),
+			jget("/api/registry/resources")
+		]);
+		renderTable("#tbl-networks", "#cnt-networks", "networks", networks.items.filter(filter),
+			"<th>Name</th><th>WAN IP</th>",
+			(e) => `<td><b>${esc(e.ssid ?? e.name ?? e.id)}</b><br><span class="muted small mono">${esc(e.id)}</span></td><td class="mono">${esc(e.wanIp ?? "—")}</td>`);
+		renderTable("#tbl-hosts", "#cnt-hosts", "hosts", hosts.items.filter(filter),
+			"<th>Device</th><th>IPs</th><th>Confidence</th>",
+			(e) => `<td><b>${esc(e.name ?? "(unnamed)")}</b><br><span class="muted small mono">${esc(e.id)}</span></td>
+				<td class="mono small">${esc((e.ips ?? []).join(", "))}</td>
+				<td><span class="badge ${CONF[e.identityConfidence] ?? "neutral"}">${esc(e.identityConfidence ?? "?")}</span></td>`);
+		renderTable("#tbl-resources", "#cnt-resources", "resources", resources.items.filter(filter),
+			"<th>Resource</th><th>Type</th><th>Endpoint</th>",
+			(e) => `<td><b>${esc(e.name ?? e.id)}</b><br><span class="muted small mono">${esc(e.id)}</span></td>
+				<td class="mono small">${esc(e.type ?? "?")}</td><td class="mono small">${esc(e.endpoint ?? "—")}</td>`);
+	} catch (e) {
+		toast(e.message, true);
+	}
+}
+
+// ---- policy editor ---------------------------------------------------------
+async function loadPolicy() {
+	try {
+		const p = await jget("/api/policy");
+		const owners = Object.entries(p.ownerRules ?? {});
+		const rules = p.typeRules ?? [];
+		const known = p.knownTypes ?? [];
+		$("#policy-editor").innerHTML = `
+		<div class="grid">
+			<div class="card">
+				<h2>Per-owner defaults</h2>
+				<table id="owner-rules"><tr><th>Owner</th><th>Gate</th><th></th></tr>
+				${owners.map(([o, g]) => `<tr data-owner="${esc(o)}">
+					<td>${o === "me" ? "me (this device)" : esc(o)}</td>
+					<td><select data-f="gate">${GATES.filter(Boolean).map((x) => `<option ${x === g ? "selected" : ""}>${x}</option>`).join("")}</select></td>
+					<td><button class="danger" data-act="del">✕</button></td></tr>`).join("")}
+				</table>
+				<div class="toolbar" style="margin:10px 0 0">
+					<input id="new-owner" placeholder="person name">
+					<select id="new-owner-gate">${GATES.filter(Boolean).map((x) => `<option>${x}</option>`).join("")}</select>
+					<button id="add-owner">Add rule</button>
+				</div>
+			</div>
+			<div class="card">
+				<h2>Per-type rules <span class="muted">(tighten only)</span></h2>
+				<table id="type-rules"><tr><th>Type</th><th>Gate</th><th></th></tr>
+				${rules.map((r) => `<tr data-type="${esc(r.type)}">
+					<td class="mono small">${esc(r.type)}</td>
+					<td><select data-f="gate">${GATES.filter(Boolean).map((x) => `<option ${x === r.permission ? "selected" : ""}>${x}</option>`).join("")}</select></td>
+					<td><button class="danger" data-act="del">✕</button></td></tr>`).join("")}
+				</table>
+				<div class="toolbar" style="margin:10px 0 0">
+					<select id="new-type">${known.map((t) => `<option>${esc(t)}</option>`).join("")}</select>
+					<select id="new-type-gate">${GATES.filter(Boolean).map((x) => `<option>${x}</option>`).join("")}</select>
+					<button id="add-type">Add rule</button>
+				</div>
+			</div>
+		</div>`;
+		wirePolicyHandlers();
+	} catch (e) {
+		$("#policy-editor").innerHTML = `<div class="note">Policy unavailable: ${esc(e.message)}</div>`;
+	}
+}
+
+async function savePolicy(mutate) {
+	const p = await jget("/api/policy");
+	mutate(p);
+	await jpost("/api/policy", p, "PUT");
+	toast("Policy saved.");
+	loadPolicy();
+	load();
+}
+
+function wirePolicyHandlers() {
+	$("#add-owner").onclick = () => {
+		const o = $("#new-owner").value.trim();
+		if (!o) return toast("Enter a name.", true);
+		savePolicy((p) => { (p.ownerRules ??= {})[o] = $("#new-owner-gate").value; });
+	};
+	$("#owner-rules").querySelectorAll("button[data-act='del']").forEach((b) => {
+		b.onclick = () => savePolicy((p) => { delete (p.ownerRules ?? {})[b.closest("tr").dataset.owner]; });
+	});
+	$("#owner-rules").querySelectorAll("select[data-f='gate']").forEach((s) => {
+		s.onchange = () => savePolicy((p) => { p.ownerRules[s.closest("tr").dataset.owner] = s.value; });
+	});
+	$("#add-type").onclick = () => {
+		const t = $("#new-type").value;
+		savePolicy((p) => {
+			p.typeRules = (p.typeRules ?? []).filter((r) => r.type !== t);
+			p.typeRules.push({ type: t, permission: $("#new-type-gate").value });
+		});
+	};
+	$("#type-rules").querySelectorAll("button[data-act='del']").forEach((b) => {
+		b.onclick = () => savePolicy((p) => {
+			p.typeRules = (p.typeRules ?? []).filter((r) => r.type !== b.closest("tr").dataset.type);
+		});
+	});
+	$("#type-rules").querySelectorAll("select[data-f='gate']").forEach((s) => {
+		s.onchange = () => savePolicy((p) => {
+			const t = s.closest("tr").dataset.type;
+			p.typeRules = (p.typeRules ?? []).filter((r) => r.type !== t);
+			p.typeRules.push({ type: t, permission: s.value });
+		});
+	});
+}
+
+$("#btn-refresh").onclick = () => { load(); loadPolicy(); };
+$("#q").oninput = () => load();
+$("#btn-prune").onclick = async () => {
+	try {
+		const r = await jpost("/api/registry/prune");
+		toast(`Pruned ${r.removed} stale unlabeled entities.`);
+		load();
+	} catch (e) { toast(e.message, true); }
+};
+
+load();
+loadPolicy();
+setInterval(load, 10000);
+</script>
+</body>
+</html>

@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sylvia — Modules</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+	<h1>Sylvia <span class="tag">modules</span></h1>
+	<nav>
+		<a href="/">Status</a>
+		<a href="/resources.html">Resources</a>
+		<a href="/modules.html" class="active">Modules</a>
+	</nav>
+</header>
+<main>
+	<div id="modules">
+		<div class="empty">loading…</div>
+	</div>
+</main>
+<div id="toast"></div>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+
+function toast(msg, isError) {
+	const t = $("#toast");
+	t.textContent = msg;
+	t.className = "show" + (isError ? " error" : "");
+	setTimeout(() => { t.className = ""; }, 3500);
+}
+async function jget(path) {
+	const r = await fetch(path);
+	if (!r.ok) { const e = new Error(`${path}: ${r.status}`); e.status = r.status; throw e; }
+	return r.json();
+}
+async function jpost(path, body) {
+	const r = await fetch(path, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body ?? {})
+	});
+	const j = await r.json().catch(() => ({}));
+	if (!r.ok) throw new Error(j.error || `${path}: ${r.status}`);
+	return j;
+}
+function esc(s) {
+	return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function upBadge(up) {
+	return up ? '<span class="badge ok">up</span>' : '<span class="badge neutral">down</span>';
+}
+
+const SETTINGS_TYPES = {
+	port: (v) => `<input type="number" value="${esc(v ?? "")}" data-t="port">`,
+	"ip": (v) => `<input value="${esc(v ?? "")}" data-t="ip" placeholder="192.168.1.1">`,
+	"ip-list": (v) => `<input value="${esc(Array.isArray(v) ? v.join(", ") : v ?? "")}" data-t="ip-list" placeholder="127.0.0.1, 192.168.1.0/24">`,
+	path: (v) => `<input value="${esc(v ?? "")}" data-t="path" placeholder="~/path">`,
+	bool: (v) => `<select data-t="bool"><option value="true" ${v ? "selected" : ""}>on</option><option value="false" ${!v ? "selected" : ""}>off</option></select>`,
+	enum: (v, opts) => `<select data-t="enum">${(opts ?? []).map((o) => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`,
+	string: (v) => `<input value="${esc(v ?? "")}" data-t="string">`,
+	number: (v) => `<input type="number" value="${esc(v ?? "")}" data-t="number">`
+};
+
+function renderSettings(mod) {
+	const schema = mod.settingsSchema ?? [];
+	const values = mod.settings ?? {};
+	if (schema.length === 0) return "";
+	return `<div class="settings" data-mod="${esc(mod.id)}" hidden>
+		<table><tr><th>Setting</th><th>Value</th></tr>
+		${schema.map((s) => `<tr data-key="${esc(s.key)}">
+			<td>${esc(s.label ?? s.key)}<br><span class="muted small mono">${esc(s.key)}</span></td>
+			<td>${(SETTINGS_TYPES[s.type] ?? SETTINGS_TYPES.string)(values[s.key] ?? s.default, s.options)}</td>
+		</tr>`).join("")}
+		</table>
+		<div class="toolbar" style="margin:10px 0 0"><button data-act="save-settings">Save settings</button></div>
+	</div>`;
+}
+
+function card(m) {
+	const actions = [];
+	actions.push(`<button data-act="status">Status</button>`);
+	actions.push(m.running
+		? `<button data-act="off">Off</button>`
+		: `<button data-act="on">On</button>`);
+	if (m.frontend) actions.push(`<button data-act="open">Open frontend</button>`);
+	if (m.scripts?.backup) actions.push(`<button data-act="backup">Backup now</button>`);
+	if ((m.settingsSchema ?? []).length > 0) actions.push(`<button data-act="toggle-settings">Settings</button>`);
+
+	return `<div class="card" data-id="${esc(m.id)}">
+		<h2>${esc(m.name ?? m.id)} ${upBadge(m.running)}</h2>
+		<dl class="kv">
+			<dt>ID</dt><dd>${esc(m.id)}</dd>
+			<dt>Behavior</dt><dd><span class="badge neutral">${esc(m.behavior ?? "manual")}</span></dd>
+			${m.frontend ? `<dt>Frontend</dt><dd>${esc(m.frontend)}</dd>` : ""}
+			${m.lastError ? `<dt>Last error</dt><dd style="color:var(--bad)">${esc(m.lastError)}</dd>` : ""}
+		</dl>
+		<div class="toolbar" style="margin:14px 0 0">${actions.join("")}</div>
+		${renderSettings(m)}
+	</div>`;
+}
+
+async function load() {
+	try {
+		const data = await jget("/api/modules");
+		const mods = data.modules ?? [];
+		$("#modules").innerHTML = mods.length === 0
+			? `<div class="note">No modules installed. Drop a module into <code>~/.sylvia/modules/&lt;id&gt;/</code>
+				(module.json + scripts) and it appears here — see DESIGN.md §9.</div>`
+			: `<div class="grid">${mods.map(card).join("")}</div>`;
+		wire();
+	} catch (e) {
+		if (e.status === 404) {
+			$("#modules").innerHTML = `<div class="note">Module manager not yet available — this page
+				activates in build step 6 (DESIGN.md §9). It will list local module servers
+				(SillyTavern, mDNS, …) with on/off, frontend links, behavior modes, and settings.</div>`;
+		} else {
+			$("#modules").innerHTML = `<div class="note">Error: ${esc(e.message)}</div>`;
+		}
+	}
+}
+
+function wire() {
+	document.querySelectorAll(".card[data-id]").forEach((cardEl) => {
+		const id = cardEl.dataset.id;
+		const settingsEl = cardEl.querySelector(".settings");
+		cardEl.querySelectorAll("button[data-act]").forEach((b) => {
+			b.onclick = async () => {
+				const act = b.dataset.act;
+				try {
+					if (act === "toggle-settings") { settingsEl.hidden = !settingsEl.hidden; return; }
+					if (act === "open") {
+						const m = (await jget("/api/modules")).modules.find((x) => x.id === id);
+						if (m?.frontend) window.open(m.frontend, "_blank");
+						return;
+					}
+					if (act === "save-settings") {
+						const values = {};
+						settingsEl.querySelectorAll("tr[data-key]").forEach((tr) => {
+							const inp = tr.querySelector("td:last-child > *");
+							let v = inp.value;
+							if (inp.dataset.t === "port" || inp.dataset.t === "number") v = Number(v);
+							if (inp.dataset.t === "bool") v = v === "true";
+							if (inp.dataset.t === "ip-list") v = v.split(",").map((s) => s.trim()).filter(Boolean);
+							values[tr.dataset.key] = v;
+						});
+						await jpost(`/api/modules/${encodeURIComponent(id)}/settings`, { settings: values });
+						toast("Settings saved.");
+						load();
+						return;
+					}
+					const path = act === "status"
+						? `/api/modules/${encodeURIComponent(id)}/status`
+						: act === "backup"
+							? `/api/modules/${encodeURIComponent(id)}/backup`
+							: `/api/modules/${encodeURIComponent(id)}/${act}`;
+					const r = await jpost(path);
+					if (act === "status") toast(JSON.stringify(r.status ?? r));
+					else { toast(`${id}: ${act} ok`); load(); }
+				} catch (e) { toast(e.message, true); }
+			};
+		});
+	});
+}
+
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>
