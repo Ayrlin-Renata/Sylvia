@@ -148,17 +148,28 @@ DSH_GLOBAL_LIB="${PREFIX:-/data/data/com.termux/files/usr}/lib/node_modules/@dee
 module_dsh_cli() {
   CURRENT_MODULE="DSH CLI"
 
+  # The mobile patcher (module_dsh_patch) performs the REAL install: it does
+  # `npm install -g` with @deepseek-ai/dsh@rc.6 + 12 local tarballs in ONE call, so
+  # arborist builds the whole tree atomically. Pre-installing DSH here is not just
+  # redundant — it leaves a half-built --ignore-scripts tree that arborist then
+  # crashes on ("Cannot read properties of null (reading 'children')") when the
+  # patcher reconciles over it. So: if the patcher is going to run, defer to it and
+  # do nothing here. (module_dsh_patch is gated by SYLVIA_WITH_DSH_PATCH.)
+  #
+  # Standalone path (no mobile patch — upstream DSH only): install here with the
+  # koffi workaround. koffi always fails on Termux because its loader keys off
+  # process.platform ("linux", not "android"), grabs the glibc default .node, cannot
+  # dlopen it on bionic, and falls back to a from-source build needing CMake (absent).
+  if [ "${SYLVIA_WITH_DSH_PATCH:-1}" -eq 1 ]; then
+    skip "deferring DSH install to the mobile patcher (single atomic npm install)"
+    return 0
+  fi
+
   if have dsh && [ -f "$DSH_GLOBAL_LIB/lib/bin.js" ]; then
     skip "DSH CLI already installed ($DSH_GLOBAL_LIB)"
     return 0
   fi
-  note "installing @deepseek-ai/dsh globally"
-  # koffi (a transitive native addon) always fails on Termux: its loader keys off
-  # process.platform, which reports "linux" (not "android") here, so it grabs the
-  # shipped glibc default .node, cannot dlopen it on bionic, and falls back to a
-  # from-source rebuild that needs CMake (absent). --ignore-scripts skips that
-  # build; the DSH fork already makes koffi/sharp optional + lazy, so the CLI runs
-  # without them (terminal FFI degrades to a clean error). We verify via `dsh --help`.
+  note "installing @deepseek-ai/dsh globally (standalone, no mobile patch)"
   if ! npm install --global @deepseek-ai/dsh; then
     warn "npm install -g @deepseek-ai/dsh failed (likely the koffi native addon)"
     warn "retrying with --ignore-scripts (skips native-addon builds; DSH runs without them)"
@@ -168,9 +179,8 @@ module_dsh_cli() {
          pkg install -y cmake ninja clang make"
   fi
   [ -f "$DSH_GLOBAL_LIB/lib/bin.js" ] || die "DSH bin.js not found at $DSH_GLOBAL_LIB/lib/bin.js after install"
-  # --ignore-scripts leaves native addons unbuilt; confirm the CLI itself still boots.
   dsh --help >/dev/null 2>&1 || die "DSH CLI installed but 'dsh --help' failed — the install is incomplete."
-  ok "DSH CLI installed"
+  ok "DSH CLI installed (standalone upstream)"
 }
 
 # =============================================================================
@@ -199,8 +209,25 @@ module_dsh_patch() {
     skip "fork already cloned ($fork_dir)"
   fi
 
+  # The fork patcher runs its own `npm install -g` (@deepseek-ai/dsh@rc.6 + 12 local
+  # tarballs). That install ALSO builds the koffi native addon, which always fails on
+  # Termux (loader keys off process.platform="linux", grabs the glibc .node, cannot
+  # dlopen on bionic, falls back to a CMake source build). npm_config_ignore_scripts
+  # makes the patcher's install skip that build transparently — the rc.7 packages ship
+  # prebuilt tarballs and DSH treats these native addons as optional/lazy, so nothing
+  # downstream needs them compiled.
+  #
+  # Clear any half-built global DSH tree first: reconciling over the leftover tree from
+  # a prior failed/standalone install is what made arborist crash
+  # ("Cannot read properties of null (reading 'children')"). A clean target install is
+  # the robust path and is idempotent (the canary above short-circuits once applied).
+  npm uninstall --global @deepseek-ai/dsh dsh >/dev/null 2>&1 || true
+  rm -rf "${PREFIX:-/data/data/com.termux/files/usr}/lib/node_modules/@deepseek-ai" \
+         "${PREFIX:-/data/data/com.termux/files/usr}/bin/dsh" 2>/dev/null || true
+
   note "running fork patcher (install/install.sh)"
-  bash "$fork_dir/install/install.sh" || die "fork patcher (install/install.sh) failed"
+  npm_config_ignore_scripts=1 bash "$fork_dir/install/install.sh" \
+    || die "fork patcher (install/install.sh) failed"
 
   [ -f "$canary" ] || die "patcher finished but $canary is still missing"
   ok "mobile/Android patches applied (12 rc.7 packages)"
