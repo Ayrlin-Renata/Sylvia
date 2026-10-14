@@ -26,6 +26,10 @@
 #      bash install.sh                 # core install
 #      bash install.sh --with-tasker   # + tasker-mcp
 #      bash install.sh --force         # regenerate launchers + sylvia.env even if present
+#      bash install.sh --force-confnew # auto-answer Y to dpkg conffile prompts
+#                                      #   (openssl.cnf, sources.list, bashrc, profile...)
+#                                      #   WARNING: overwrites local edits to those files.
+#                                      #   Remove this flag if you customized them.
 #
 #  Env overrides (all optional):
 #      SYLVIA_REPO_URL       git URL of THIS repo
@@ -52,6 +56,7 @@ SYLVIA_ADB_MODE="${SYLVIA_ADB_MODE:-auto}"
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 FORCE=0
+FORCE_CONFNEW=0
 WITH_TASKER=0
 CURRENT_MODULE="bootstrap"
 
@@ -113,7 +118,15 @@ module_base_packages() {
   else
     note "installing: ${missing[*]}"
     pkg update -y >/dev/null 2>&1 || warn "pkg update returned non-zero; continuing"
-    pkg install -y "${missing[@]}" || die "pkg install failed for: ${missing[*]}"
+    # --force-confnew auto-answers "Y" (install the maintainer's version) to dpkg's
+    # conffile prompts (openssl.cnf, sources.list, bashrc, profile, ...). Without the
+    # flag dpkg stops and waits. opt-in: users with custom edits must not set it.
+    if [ "$FORCE_CONFNEW" -eq 1 ]; then
+      pkg install -y -o "Dpkg::Options::=--force-confnew" "${missing[@]}" \
+        || die "pkg install failed for: ${missing[*]}"
+    else
+      pkg install -y "${missing[@]}" || die "pkg install failed for: ${missing[*]}"
+    fi
     ok "installed base packages: ${missing[*]}"
   fi
 
@@ -139,9 +152,24 @@ module_dsh_cli() {
     skip "DSH CLI already installed ($DSH_GLOBAL_LIB)"
     return 0
   fi
-  note "installing @deepseek-ai/dsh globally (native-addon build warnings are harmless)"
-  npm install --global @deepseek-ai/dsh || die "npm install -g @deepseek-ai/dsh failed"
+  note "installing @deepseek-ai/dsh globally"
+  # koffi (a transitive native addon) always fails on Termux: its loader keys off
+  # process.platform, which reports "linux" (not "android") here, so it grabs the
+  # shipped glibc default .node, cannot dlopen it on bionic, and falls back to a
+  # from-source rebuild that needs CMake (absent). --ignore-scripts skips that
+  # build; the DSH fork already makes koffi/sharp optional + lazy, so the CLI runs
+  # without them (terminal FFI degrades to a clean error). We verify via `dsh --help`.
+  if ! npm install --global @deepseek-ai/dsh; then
+    warn "npm install -g @deepseek-ai/dsh failed (likely the koffi native addon)"
+    warn "retrying with --ignore-scripts (skips native-addon builds; DSH runs without them)"
+    npm install --global @deepseek-ai/dsh --ignore-scripts \
+      || die "npm install -g @deepseek-ai/dsh failed even with --ignore-scripts.
+       Re-run to see the full error, or install a toolchain and retry without the flag:
+         pkg install -y cmake ninja clang make"
+  fi
   [ -f "$DSH_GLOBAL_LIB/lib/bin.js" ] || die "DSH bin.js not found at $DSH_GLOBAL_LIB/lib/bin.js after install"
+  # --ignore-scripts leaves native addons unbuilt; confirm the CLI itself still boots.
+  dsh --help >/dev/null 2>&1 || die "DSH CLI installed but 'dsh --help' failed — the install is incomplete."
   ok "DSH CLI installed"
 }
 
@@ -732,8 +760,9 @@ for arg in "$@"; do
   case "$arg" in
     --with-tasker) WITH_TASKER=1 ;;
     --force)       FORCE=1 ;;
-    -h|--help)     sed -n '2,45p' "$0" 2>/dev/null || printf '%s\n' \
-                     "Usage: bash install.sh [--with-tasker] [--force] [--help]"; exit 0 ;;
+    --force-confnew) FORCE_CONFNEW=1 ;;
+    -h|--help)     sed -n '2,48p' "$0" 2>/dev/null || printf '%s\n' \
+                     "Usage: bash install.sh [--with-tasker] [--force] [--force-confnew] [--help]"; exit 0 ;;
     *)             die "unknown argument: $arg (see --help)" ;;
   esac
 done

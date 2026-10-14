@@ -51,9 +51,19 @@ it is used only as a test bed (see §6).
 Open Termux and run:
 
 ```sh
-pkg upgrade -y && pkg install -y curl
-curl -fsSL https://raw.githubusercontent.com/Ayrlin-Renata/Sylvia/main/install.sh | bash
+pkg upgrade -y -o Dpkg::Options::=--force-confnew && pkg install -y curl
+curl -fsSL https://raw.githubusercontent.com/Ayrlin-Renata/Sylvia/main/install.sh | bash -s -- --force-confnew
 ```
+
+> **About `--force-confnew`:** during a fresh install, `pkg`/`dpkg` stops and asks whether
+> to keep or replace several config files (`usr/etc/tls/openssl.cnf`, `usr/etc/apt/sources.list`,
+> `bashrc`, `profile`, ...). This flag auto-answers **"Y" (take the package maintainer's version)**,
+> so the install runs unattended. It is on by default here for a clean, one-shot setup.
+>
+> **Remove `--force-confnew` if you have customized any of those files** (your shell `bashrc`/
+> `profile`, a pinned `sources.list` mirror, a tweaked `openssl.cnf`) — otherwise your edits are
+> overwritten by the packaged defaults. Without the flag you will be prompted per file and can
+> choose `N` to keep your version.
 
 The installer is **idempotent** — every module checks whether its work is already done
 and skips if so, so you can re-run it safely at any time. It is also **fail-fast**: it
