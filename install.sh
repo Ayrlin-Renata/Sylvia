@@ -275,7 +275,15 @@ module_dsh_patch() {
   local i
   note "installing $cli_spec + ${#dsh_siblings[@]} local rc.7 tarballs (one npm call each)"
   for i in "${!specs[@]}"; do
-    [ -f "${specs[$i]}" ] || die "fork tarball missing: ${specs[$i]} — delete $fork_dir and re-run to re-clone."
+    # Only the LOCAL tarball specs are file paths — the CLI spec (specs[0]) is a
+    # registry spec ("@deepseek-ai/dsh@x.y.z") that npm resolves from the network,
+    # so the -f existence check must not reject it.
+    case "${specs[$i]}" in
+      *.tgz)
+        [ -f "${specs[$i]}" ] \
+          || die "fork tarball missing: ${specs[$i]} — delete $fork_dir and re-run to re-clone."
+        ;;
+    esac
     # npm's exit code can be non-zero purely because an OPTIONAL native-addon build
     # script failed (koffi/sharp/node-pty) — expected and harmless on Termux, since the
     # rc.7 packages make those addons lazy. So don't trust the exit code: install
