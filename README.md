@@ -37,7 +37,7 @@ yourself, then the agent can use them):
   ADB-level permission broker; some Tasker setups use it for privileged actions without root.
 
 The rest is handled by the installer: it clones/installs everything else (nodejs, adb,
-rclone, uv, mitmproxy, nmap, iproute2, the MCP servers) inside Termux.
+rclone, uv, mitmproxy, nmap, iproute2, python, the MCP servers) inside Termux.
 
 **Device prerequisites:** an arm64 device on Android 10+, **8 GB RAM** recommended. On a
 physical phone you must enable **Developer options → Wireless debugging** (the installer
@@ -76,7 +76,8 @@ re-run the same command.
 ### What it installs
 
 1. **Termux base packages** — `nodejs-lts`, `git`, `bash`, `tmux`, `android-tools` (provides
-   `adb`), `rclone`, `uv`, `nmap`, `iproute2` (provides `ip`, used for network detection).
+   `adb`), `rclone`, `uv`, `nmap`, `iproute2` (provides `ip`, used for network detection),
+   `python` (interpreter for `uv`/`uvx` → mitmproxy).
 2. **DSH CLI + mobile/Android patches** — clones your
    [`Ayrlin-Renata/Deepseek-harness-mobile`](https://github.com/Ayrlin-Renata/Deepseek-harness-mobile)
    fork, then installs the CLI (`@deepseek-ai/dsh`) and overlays the 12 local `rc.7`
@@ -144,6 +145,7 @@ command -v rclone
 command -v uv
 command -v nmap
 command -v ip
+command -v python
 
 # mitmproxy CLI should be on PATH (~/.local/bin):
 command -v mitmdump
@@ -305,7 +307,7 @@ bash uninstall.sh --purge
 ```
 
 By default it keeps the generic Termux packages (git, bash, nodejs-lts, rclone, tmux,
-android-tools, uv, nmap, iproute2) and any `@deepseek-ai/dsh` install, since those can be shared
+android-tools, uv, nmap, iproute2, python) and any `@deepseek-ai/dsh` install, since those can be shared
 with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those too.
 
 ## 11. Troubleshooting

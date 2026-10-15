@@ -3,7 +3,7 @@
 #  Sylvia — consolidated agentic-AI harness installer for Android (Termux)
 # =============================================================================
 #  Installs, end to end:
-#    1. Termux base packages     nodejs-lts, git, bash, tmux, android-tools (adb), rclone, uv, nmap, iproute2
+#    1. Termux base packages     nodejs-lts, git, bash, tmux, android-tools (adb), rclone, uv, nmap, iproute2, python
 #    2. DSH Mobile CLI           npm -g @deepseek-ai/dsh
 #    3. Mobile/Android patches   Ayrlin-Renata fork -> 12 local rc.7 tarballs
 #    4. sylvia-mcp server        ADB loopback / Tasker XML / rclone JSON / network+resource+discovery
@@ -113,9 +113,10 @@ module_base_packages() {
   have uv    || missing+=(uv)              # mitmproxy install + mitmproxy-mcp launcher
   have nmap  || missing+=(nmap)            # LAN discovery (daemon discovery_scan tool)
   have ip    || missing+=(iproute2)        # 'ip' binary — daemon Tier-0 network detection
+  have python || missing+=(python)         # uv/uvx interpreter (mitmproxy CLI + mitmproxy-mcp)
 
   if [ ${#missing[@]} -eq 0 ]; then
-    skip "all base packages present (git, bash, adb, rclone, tmux, node, uv, nmap, iproute2)"
+    skip "all base packages present (git, bash, adb, rclone, tmux, node, uv, nmap, iproute2, python)"
   else
     note "installing: ${missing[*]}"
     pkg update -y >/dev/null 2>&1 || warn "pkg update returned non-zero; continuing"
@@ -405,15 +406,30 @@ module_sylvia_daemon() {
   # Ensure the state root exists (registry/netstate/module files live here).
   ensure_dir "$SYLVIA_HOME"
 
-  # Boot probe: import the entry and confirm the config + key modules load.
-  node -e "
-    import(process.argv[1]).then(m => {
-      if (typeof m.main !== 'function' && typeof m.startApi !== 'function') {
-        console.error('sylvia-daemon probe: entry does not export main/startApi'); process.exit(1);
-      }
-    }).catch(e => { console.error('sylvia-daemon probe failed: ' + e.message); process.exit(1); });
-  " "$SYLVIA_DAEMON_DIR/index.js" || die "sylvia-daemon failed its load probe"
-  ok "sylvia-daemon verified (loads without error)"
+  # Boot probe: start the daemon in the BACKGROUND on a scratch port, require
+  # /api/health to answer, then shut it down. (A plain `node -e import(...)` probe
+  # must NOT be used: index.js's auto-run guard compares import.meta.url to
+  # argv[1], and `node -e` puts the extra argument at argv[1] — so the import
+  # itself started the server and blocked the installer until Ctrl-C.)
+  local probe_port=$((3990 + RANDOM % 100))
+  local probe_log="$SYLVIA_HOME/daemon-probe.log"
+  SYLVIA_DAEMON_PORT="$probe_port" node "$SYLVIA_DAEMON_DIR/index.js" >"$probe_log" 2>&1 &
+  local probe_pid=$! up=0 t
+  for t in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$probe_pid" 2>/dev/null || break   # died during boot — stop polling
+    curl -sf "http://127.0.0.1:$probe_port/api/health" >/dev/null 2>&1 && { up=1; break; }
+    sleep 0.5
+  done
+  kill "$probe_pid" 2>/dev/null || true
+  wait "$probe_pid" 2>/dev/null || true
+  if [ "$up" -ne 1 ]; then
+    warn "daemon probe log ($probe_log):"
+    cat "$probe_log" >&2 || true
+    rm -f "$probe_log"
+    die "sylvia-daemon did not become healthy on :$probe_port"
+  fi
+  rm -f "$probe_log"
+  ok "sylvia-daemon verified (healthy on :$probe_port)"
 }
 
 # =============================================================================

@@ -62,7 +62,7 @@ DSH_SIBLINGS=(
 )
 
 # Base packages install.sh may have installed (generic tools — kept by default).
-BASE_PACKAGES=(git bash android-tools rclone tmux nodejs-lts uv nmap iproute2)
+BASE_PACKAGES=(git bash android-tools rclone tmux nodejs-lts uv nmap iproute2 python)
 
 # Cordis entry ids owned by Sylvia (both MCP-server and plugin shapes).
 CORDIS_OWNED_IDS=(sylvia-mcp sylvia-bridge tasker-mcp mitmproxy-mcp)
