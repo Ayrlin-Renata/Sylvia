@@ -191,13 +191,32 @@ module_dsh_cli() {
 module_dsh_patch() {
   CURRENT_MODULE="DSH mobile patch"
 
-  # Idempotency canary: dsh-client-ui-layout only exists (at rc.7) once the
-  # patcher has run. It is one of the 12 local tarballs the patcher overlays.
-  local canary="$DSH_GLOBAL_LIB/dsh-client-ui-layout/package.json"
-  if [ -f "$canary" ] && node -e "process.exit(require(process.argv[1]).version==='0.1.0-rc.7'?0:1)" "$canary"; then
-    skip "mobile patch already applied (rc.7 packages present)"
+  # Idempotency canary — a COMPLETE install has the CLI at rc.6 AND all 12 rc.7
+  # sibling packages. Checking only one package (the old canary) is what left broken
+  # half-installs behind: a crash can leave dsh-client-ui-layout@rc.7 on disk while
+  # @deepseek-ai/dsh and the other siblings are missing, so the old canary said
+  # "done", returned early, and skipped BOTH the cleanup and the install — with no
+  # way to repair. Requiring every package means a partial install is always re-done.
+  local GMP="${PREFIX:-/data/data/com.termux/files/usr}/lib/node_modules/@deepseek-ai"
+  local dsh_siblings=(
+    dsh-client-ui-layout dsh-subprocess-local dsh-terminal-bash dsh-sandbox
+    dsh-sandbox-local dsh-fs-local dsh-session-persistence-jsonl
+    dsh-attachment-local dsh-host-directory-picker-native dsh-client-modules
+    dsh-host-directory-picker-browse dsh-client-ui-directory-picker-browse
+  )
+  local patch_ok=1 sib
+  [ -f "$GMP/dsh/package.json" ] || patch_ok=0
+  if [ "$patch_ok" -eq 1 ]; then
+    for sib in "${dsh_siblings[@]}"; do
+      [ -f "$GMP/$sib/package.json" ] || { patch_ok=0; break; }
+    done
+  fi
+  if [ "$patch_ok" -eq 1 ] \
+     && node -e "process.exit(require(process.argv[1]).version==='0.1.0-rc.7'?0:1)" "$GMP/dsh-client-ui-layout/package.json"; then
+    skip "mobile patch already applied (CLI rc.6 + 12 rc.7 packages present)"
     return 0
   fi
+  note "mobile patch incomplete or missing — repairing"
 
   local fork_dir="$SYLVIA_HOME/dsh-mobile"
   if [ ! -f "$fork_dir/install/install.sh" ]; then
@@ -229,8 +248,12 @@ module_dsh_patch() {
   npm_config_ignore_scripts=1 bash "$fork_dir/install/install.sh" \
     || die "fork patcher (install/install.sh) failed"
 
-  [ -f "$canary" ] || die "patcher finished but $canary is still missing"
-  ok "mobile/Android patches applied (12 rc.7 packages)"
+  local sib2
+  for sib2 in dsh "${dsh_siblings[@]}"; do
+    [ -f "$GMP/$sib2/package.json" ] \
+      || die "patcher finished but $GMP/$sib2/package.json is still missing — re-run to repair."
+  done
+  ok "mobile/Android patches applied (CLI rc.6 + 12 rc.7 packages)"
 }
 
 # =============================================================================

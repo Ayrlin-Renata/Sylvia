@@ -281,7 +281,32 @@ dev checkout works offline) and falls back to a shallow `git clone` otherwise.
 
 ---
 
-## 10. Troubleshooting
+## 10. Uninstall (development / emulator iteration)
+
+`uninstall.sh` removes **only** what `install.sh` created — every deletion is scoped to
+the Sylvia footprint or id-tagged, so other DSH profiles and non-Sylvia config survive.
+
+```bash
+# Preview what would be removed, change nothing:
+bash uninstall.sh --dry-run
+
+# Remove the Sylvia footprint (~/.sylvia, the sylvia-bridge symlink, the
+# sylvia-mcp / sylvia-bridge / tasker-mcp / mitmproxy-mcp cordis entries).
+# Leaves DSH and all Termux packages alone:
+bash uninstall.sh
+
+# Also remove @deepseek-ai/dsh + its 12 rc.7 siblings + the global dsh bin:
+bash uninstall.sh --remove-dsh
+
+# Everything above + `pkg uninstall` the base packages (git/bash/rclone/...):
+bash uninstall.sh --purge
+```
+
+By default it keeps the generic Termux packages (git, bash, nodejs-lts, rclone, tmux,
+android-tools, uv, nmap) and any `@deepseek-ai/dsh` install, since those can be shared
+with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those too.
+
+## 11. Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|

@@ -425,6 +425,8 @@ Rationale: structured JSON over a DB (matches the existing state-management appr
 | registry home | separate daemon :3090 | one writer/policy point for MCP + plugin + UI |
 | page split | control panel = **status only**; ownership config = **resource page only** | one home for all ownership decisions; panel stays glanceable |
 | local webservers | formalized **module system** (§9): config protocol + generic actions + behavior modes | modules self-describe settings (no per-module UI code); `always` modules are exactly netgate's managed traffic; Tasker mode reuses `tasker_write_and_reload` |
+| patcher idempotency canary | **all-or-nothing** (CLI rc.6 + all 12 rc.7 packages), never a single package | a single-package canary misreported partial installs as "done", skipping both cleanup and install and stranding a broken tree with no repair path |
+| installer footprint removal | separate **uninstall.sh** (opt-in `--remove-dsh` / `--remove-packages`, `--dry-run`) | dev/emulator iteration needs a clean slate; must never touch non-Sylvia DSH profiles or generic Termux packages by default |
 
 ## 15. Open questions / verify in emulator
 
