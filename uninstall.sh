@@ -62,7 +62,17 @@ DSH_SIBLINGS=(
 )
 
 # Base packages install.sh may have installed (generic tools — kept by default).
+# Used only as a fallback when no install-packages.txt record exists (an
+# install from before the record file was introduced).
 BASE_PACKAGES=(git bash android-tools rclone tmux nodejs-lts uv nmap iproute2 python)
+
+# Rust/C toolchain install.sh adds just-in-time to source-build mitmproxy
+# (PyPI has no Android wheels). Fallback list — same caveat as BASE_PACKAGES.
+MITM_TOOLCHAIN_PACKAGES=(rust binutils clang make pkg-config openssl)
+
+# Package record written by install.sh: one package name per line, only ever
+# packages that were MISSING before install added them. Preferred source.
+PKG_RECORD="${SYLVIA_HOME}/install-packages.txt"
 
 # Cordis entry ids owned by Sylvia (both MCP-server and plugin shapes).
 CORDIS_OWNED_IDS=(sylvia-mcp sylvia-bridge tasker-mcp mitmproxy-mcp)
@@ -219,10 +229,28 @@ fi
 
 head_ "Termux base packages"
 if [ "$REMOVE_PKGS" -eq 1 ]; then
-  act "pkg uninstall ${BASE_PACKAGES[*]}" \
-    bash -c "pkg uninstall -y ${BASE_PACKAGES[*]} 2>/dev/null || true"
+  # Prefer the install record: it lists ONLY packages install.sh actually
+  # added (they were missing beforehand), so pre-existing ones survive.
+  record_pkgs=()
+  if [ -f "$PKG_RECORD" ]; then
+    while IFS= read -r _p; do
+      case "$_p" in ''|'#'*) continue ;; esac
+      record_pkgs+=("$_p")
+    done < "$PKG_RECORD"
+    note "using package record: $PKG_RECORD"
+  else
+    warn "no package record found — falling back to the known install list"
+    record_pkgs=("${BASE_PACKAGES[@]}" "${MITM_TOOLCHAIN_PACKAGES[@]}")
+  fi
+  if [ ${#record_pkgs[@]} -eq 0 ]; then
+    skip "package record is empty — nothing to remove"
+  else
+    act "pkg uninstall ${record_pkgs[*]}" \
+      bash -c "pkg uninstall -y ${record_pkgs[*]} 2>/dev/null || true"
+    act "rm $PKG_RECORD" bash -c "rm -f '$PKG_RECORD'"
+  fi
 else
-  skip "leaving base packages installed (pass --remove-packages to delete)"
+  skip "leaving base packages + mitmproxy toolchain installed (pass --remove-packages to delete)"
 fi
 
 head_ "Done"

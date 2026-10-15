@@ -98,6 +98,19 @@ module_preconditions() {
 }
 
 # =============================================================================
+#  PACKAGES-INSTALLED RECORD
+# =============================================================================
+# install.sh only ever installs MISSING packages, so it records exactly what it
+# added (base packages + the mitmproxy toolchain). uninstall.sh removes from
+# this record — never a fixed list — so pre-existing packages survive.
+PKG_RECORD="${SYLVIA_HOME}/install-packages.txt"
+record_packages() {
+  [ ${#} -eq 0 ] && return 0
+  ensure_dir "$SYLVIA_HOME"
+  printf '%s\n' "$@" >> "$PKG_RECORD"
+}
+
+# =============================================================================
 #  MODULE 2 — Termux base packages
 # =============================================================================
 module_base_packages() {
@@ -130,6 +143,7 @@ module_base_packages() {
       pkg install -y "${missing[@]}" || die "pkg install failed for: ${missing[*]}"
     fi
     ok "installed base packages: ${missing[*]}"
+    record_packages "${missing[@]}"
   fi
 
   # node is now guaranteed present (either pre-existing or just installed).
@@ -772,17 +786,48 @@ module_tasker_mcp() {
 #      intercepts directly;
 #   2. the mitmproxy-mcp source, registered in module_register_mcp and run via
 #      `uvx`, which resolves its own mitmproxy>=12 dependency at launch.
-# uv resolves the Termux Python correctly on current uv builds (astral-sh/uv#7373
-# closed by #9005), so no pip/rust workaround is needed.
+# NOTE: PyPI ships no android/bionic wheels for mitmproxy's native deps
+# (bcrypt, cryptography, cffi, zstandard, pylsqpack, ...), so uv builds them
+# from source and the build needs a Rust + C toolchain on Termux. The
+# toolchain is installed just-in-time here, only when mitmdump is missing —
+# a one-time source build that can take several minutes. References:
+# termux-packages#25440 (mitmproxy build), #16746 (the CFLAGS below are
+# mandatory for ruamel.yaml.clib), drygdryg's gist (proven recipe).
 module_mitm_mcp() {
   CURRENT_MODULE="mitmproxy"
 
-  # 1. mitmproxy CLI on PATH (uvx-managed tool env; skip if already present).
+  # 1. mitmproxy CLI on PATH (uv-managed tool env; skip if already present).
   if have mitmdump; then
     skip "mitmproxy CLI already installed ($(command -v mitmdump))"
   else
-    note "installing mitmproxy via 'uv tool install' (first run resolves wheels)"
-    uv tool install mitmproxy || die "uv tool install mitmproxy failed"
+    # Each dep is have-checked, so a pre-existing toolchain is reused as-is.
+    local build_deps=()
+    have cargo      || build_deps+=(rust)       # bcrypt/cryptography/pylsqpack (Rust)
+    have ld         || build_deps+=(binutils)   # linker for the Rust builds
+    have clang      || build_deps+=(clang)      # C extensions (cffi, tornado, msgpack, ...)
+    have make       || build_deps+=(make)       # some sdists drive make
+    have pkg-config || build_deps+=(pkg-config) # cryptography locates OpenSSL with it
+    have openssl    || build_deps+=(openssl)    # cryptography's build needs its headers
+    if [ ${#build_deps[@]} -gt 0 ]; then
+      note "installing mitmproxy build toolchain: ${build_deps[*]}"
+      pkg update -y >/dev/null 2>&1 || warn "pkg update returned non-zero; continuing"
+      if [ "$FORCE_CONFNEW" -eq 1 ]; then
+        pkg install -y -o "Dpkg::Options::=--force-confnew" "${build_deps[@]}" \
+          || die "pkg install failed for: ${build_deps[*]}"
+      else
+        pkg install -y "${build_deps[@]}" || die "pkg install failed for: ${build_deps[*]}"
+      fi
+      record_packages "${build_deps[@]}"
+    fi
+    note "building mitmproxy from source (no android wheels on PyPI; one-time, can take minutes)"
+    # -Wno-incompatible-function-pointer-types: required to compile
+    # ruamel.yaml.clib with Termux clang>=15 (termux-packages#16746).
+    if ! CFLAGS="-Wno-incompatible-function-pointer-types" uv tool install mitmproxy; then
+      die "uv tool install mitmproxy failed (source build).
+       The build toolchain was installed above. Verify manually with:
+         pkg install rust binutils clang make pkg-config openssl
+         CFLAGS='-Wno-incompatible-function-pointer-types' uv tool install mitmproxy"
+    fi
     have mitmdump || {
       # uv installs tool executables to ~/.local/bin; ensure it is on PATH for
       # this session and for future shells before declaring success.

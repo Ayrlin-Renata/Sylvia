@@ -97,7 +97,11 @@ re-run the same command.
    never rewrites, and skips any entry already present by `id`.
 7. **mitmproxy + `mitmproxy-mcp`** — installs the mitmproxy CLI via
    `uv tool install mitmproxy` and clones the `mitmproxy-mcp` MCP server, which is
-   registered and run through `uvx`.
+   registered and run through `uvx`. PyPI has **no Android wheels** for mitmproxy's
+   native deps (`bcrypt`, `cryptography`, `cffi`, ...), so this builds them from
+   source: the installer adds the Rust/C toolchain (`rust`, `binutils`, `clang`,
+   `make`, `pkg-config`, `openssl` — only what's missing) just for this step.
+   The first build can take several minutes; later runs skip it entirely.
 8. **Local module definitions** — SillyTavern and mDNS module skeletons under
    `~/.sylvia/modules/`, manageable from the control panel.
 
