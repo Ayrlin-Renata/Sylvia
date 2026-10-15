@@ -250,40 +250,48 @@ module_dsh_patch() {
   # to a from-source build needing CMake (absent). The rc.7 packages already make these
   # optional/lazy, so nothing downstream needs them compiled.
   local inst_dir="$fork_dir/install"
-  local specs=(
-    "@deepseek-ai/dsh@0.1.0-rc.6"
-    "$inst_dir/deepseek-ai-dsh-client-ui-layout-0.1.0-rc.7.tgz"
-    "$inst_dir/deepseek-ai-dsh-subprocess-local-0.1.0-rc.7.tgz"
-    "$inst_dir/deepseek-ai-dsh-terminal-bash-0.1.0-rc.7.tgz"
-    "$inst_dir/deepseek-ai-dsh-sandbox-0.1.0-rc.7.tgz"
-    "$inst_dir/deepseek-ai-dsh-sandbox-local-0.1.0-rc.7.tgz"
-    "$inst_dir/deepseek-ai-dsh-fs-local-0.1.0-rc.7.tgz"
-    "$inst_dir/deepseek-ai-dsh-session-persistence-jsonl-0.1.0-rc.7.tgz"
-    "$inst_dir/deepseek-ai-dsh-attachment-local-0.1.0-rc.7.tgz"
-    "$inst_dir/deepseek-ai-dsh-host-directory-picker-native-0.1.0-rc.7.tgz"
-    "$inst_dir/deepseek-ai-dsh-client-modules-0.1.0-rc.7.tgz"
-    "$inst_dir/deepseek-ai-dsh-host-directory-picker-browse-0.1.0-rc.7.tgz"
-    "$inst_dir/deepseek-ai-dsh-client-ui-directory-picker-browse-0.1.0-rc.7.tgz"
-  )
-  local spec pkgname pkgdir
-  note "installing CLI rc.6 + 12 rc.7 packages (one npm call each, native builds skipped)"
-  for spec in "${specs[@]}"; do
-    [ -f "$spec" ] || case "$spec" in
-      *.tgz) die "fork tarball missing: $spec — delete $fork_dir and re-run to re-clone" ;;
-    esac
+
+  # Read the fork's PINNED versions out of its own install.sh so a fork version bump
+  # can never leave this installer stale. (The package SET still mirrors dsh_siblings
+  # above — keep that list in sync if the fork adds/removes a tarball.)
+  local hits cli_spec tgz_ver
+  hits="$(grep -oE '@deepseek-ai/dsh@[0-9][0-9a-zA-Z.-]*' "$inst_dir/install.sh" || true)"
+  cli_spec="${hits%%$'\n'*}"
+  [ -n "$cli_spec" ] || die "could not read the CLI spec from $inst_dir/install.sh"
+  hits="$(grep -oE 'deepseek-ai-dsh-client-ui-layout-[0-9][0-9a-zA-Z.-]*\.tgz' "$inst_dir/install.sh" || true)"
+  hits="${hits%%$'\n'*}"
+  tgz_ver="${hits#deepseek-ai-dsh-client-ui-layout-}"; tgz_ver="${tgz_ver%.tgz}"
+  [ -n "$tgz_ver" ] || die "could not read the rc tarball version from $inst_dir/install.sh"
+
+  # (installed dir under @deepseek-ai, install spec) — one entry per package, so the
+  # post-install check never has to parse a name out of a spec (that parsing is what
+  # the previous attempt got wrong: "${spec%%@*}" cuts at the SCOPE, not the version).
+  local dirs=("dsh") specs=("$cli_spec") sib
+  for sib in "${dsh_siblings[@]}"; do
+    dirs+=("$sib")
+    specs+=("$inst_dir/deepseek-ai-${sib}-${tgz_ver}.tgz")
+  done
+
+  local i
+  note "installing $cli_spec + ${#dsh_siblings[@]} local rc.7 tarballs (one npm call each)"
+  for i in "${!specs[@]}"; do
+    [ -f "${specs[$i]}" ] || die "fork tarball missing: ${specs[$i]} — delete $fork_dir and re-run to re-clone."
     # npm's exit code can be non-zero purely because an OPTIONAL native-addon build
-    # script failed (koffi/sharp/node-pty) — that is expected and harmless on Termux,
-    # since the rc.7 packages make those addons lazy. So don't trust the exit code;
-    # install best-effort, then verify the package actually landed on disk.
-    npm_config_ignore_scripts=1 npm install --global "$spec" >/dev/null 2>&1 || true
-    case "$spec" in
-      # Registry spec (@deepseek-ai/dsh@x.y.z) → installed under the @deepseek-ai scope.
-      @*/*) pkgname="${spec%%@*}" ;;        # "@deepseek-ai/dsh@0.1.0-rc.6" → "@deepseek-ai/dsh"
-      *.tgz) pkgname="$(basename "$spec")"; pkgname="${pkgname%.tgz}" ;;  # scoped tarball name
-    esac
-    pkgdir="$GMP/$pkgname"
-    [ -f "$pkgdir/package.json" ] \
-      || die "npm install -g did not produce $pkgdir — the package is genuinely broken (re-run to retry)."
+    # script failed (koffi/sharp/node-pty) — expected and harmless on Termux, since the
+    # rc.7 packages make those addons lazy. So don't trust the exit code: install
+    # best-effort, then verify the package actually landed on disk.
+    npm_config_ignore_scripts=1 npm install --global "${specs[$i]}" >/dev/null 2>&1 || true
+    if [ ! -f "$GMP/${dirs[$i]}/package.json" ]; then
+      # One package in the set (dsh-terminal-bash) declares 8 peerDependencies; npm's
+      # arborist can crash its tree-builder on the peer graph ("Cannot read properties
+      # of null (reading 'children')" — reproduced on npm 10 AND 11, Windows + Termux).
+      # --legacy-peer-deps skips that peer reconciliation and lands the package. This
+      # ONLY applies to the one package that failed; the rest install normally with
+      # peers resolved. Retry once, then verify on disk.
+      npm_config_ignore_scripts=1 npm install --global --legacy-peer-deps "${specs[$i]}" >/dev/null 2>&1 || true
+    fi
+    [ -f "$GMP/${dirs[$i]}/package.json" ] \
+      || die "npm install -g did not produce $GMP/${dirs[$i]} — the package is genuinely broken (re-run to retry)."
   done
 
   local sib2
