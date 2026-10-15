@@ -37,7 +37,7 @@ yourself, then the agent can use them):
   ADB-level permission broker; some Tasker setups use it for privileged actions without root.
 
 The rest is handled by the installer: it clones/installs everything else (nodejs, adb,
-rclone, uv, mitmproxy, nmap, the MCP servers) inside Termux.
+rclone, uv, mitmproxy, nmap, iproute2, the MCP servers) inside Termux.
 
 **Device prerequisites:** an arm64 device on Android 10+, **8 GB RAM** recommended. On a
 physical phone you must enable **Developer options → Wireless debugging** (the installer
@@ -76,27 +76,28 @@ re-run the same command.
 ### What it installs
 
 1. **Termux base packages** — `nodejs-lts`, `git`, `bash`, `tmux`, `android-tools` (provides
-   `adb`), `rclone`, `uv`, `nmap`.
-2. **DSH Mobile CLI** — `npm install -g @deepseek-ai/dsh`.
-3. **Mobile/Android patches** — clones your
+   `adb`), `rclone`, `uv`, `nmap`, `iproute2` (provides `ip`, used for network detection).
+2. **DSH CLI + mobile/Android patches** — clones your
    [`Ayrlin-Renata/Deepseek-harness-mobile`](https://github.com/Ayrlin-Renata/Deepseek-harness-mobile)
-   fork and runs its `install/install.sh` patcher, overlaying the 12 local `rc.7`
+   fork, then installs the CLI (`@deepseek-ai/dsh`) and overlays the 12 local `rc.7`
    packages (mobile single-column shell, optional native addons, filesystem fallbacks,
-   directory-picker timeout + retry, plugin-bundle caching).
-4. **`sylvia-mcp`** — the custom MCP server, source + `npm install` + a stdio handshake
+   directory-picker timeout + retry, plugin-bundle caching) — **one npm install per
+   package**, because npm's multi-spec install crashes its dependency-tree builder on
+   this set (a package with 8 peer deps; `--legacy-peer-deps` retries just that one).
+3. **`sylvia-mcp`** — the custom MCP server, source + `npm install` + a stdio handshake
    smoke-test that confirms all 9 tools register.
-5. **`sylvia-daemon`** — the control daemon (loopback HTTP API on `:3090`): network-state
+4. **`sylvia-daemon`** — the control daemon (loopback HTTP API on `:3090`): network-state
    detection, netgate (managed-traffic hold/resume), resource registry + policy, LAN
    discovery, module manager, and the web control panel.
-6. **`sylvia-bridge`** — the DSH plugin that monitors network state and pauses/resumes
+5. **`sylvia-bridge`** — the DSH plugin that monitors network state and pauses/resumes
    the harness on metered connections (configurable).
-7. **MCP registration** — appends the server entries to
+6. **MCP registration** — appends the server entries to
    `~/.dsh/profiles/web/cordis.patch.yml`. This is **non-destructive**: it only appends,
    never rewrites, and skips any entry already present by `id`.
-8. **mitmproxy + `mitmproxy-mcp`** — installs the mitmproxy CLI via
+7. **mitmproxy + `mitmproxy-mcp`** — installs the mitmproxy CLI via
    `uv tool install mitmproxy` and clones the `mitmproxy-mcp` MCP server, which is
    registered and run through `uvx`.
-9. **Local module definitions** — SillyTavern and mDNS module skeletons under
+8. **Local module definitions** — SillyTavern and mDNS module skeletons under
    `~/.sylvia/modules/`, manageable from the control panel.
 
 Everything lands under `~/.sylvia` (override with `SYLVIA_HOME`).
@@ -142,6 +143,7 @@ command -v adb
 command -v rclone
 command -v uv
 command -v nmap
+command -v ip
 
 # mitmproxy CLI should be on PATH (~/.local/bin):
 command -v mitmdump
@@ -303,7 +305,7 @@ bash uninstall.sh --purge
 ```
 
 By default it keeps the generic Termux packages (git, bash, nodejs-lts, rclone, tmux,
-android-tools, uv, nmap) and any `@deepseek-ai/dsh` install, since those can be shared
+android-tools, uv, nmap, iproute2) and any `@deepseek-ai/dsh` install, since those can be shared
 with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those too.
 
 ## 11. Troubleshooting

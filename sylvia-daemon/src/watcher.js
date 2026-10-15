@@ -38,6 +38,10 @@ export function createWatcher({ config, netgate, store, log }) {
 
 			if (changed) {
 				log("netstate:", state.transport, state.metered ? "METERED" : "unmetered", `via ${state.source}`);
+				if (state.source === "unavailable") {
+					// fail-closed engaged because the 'ip' binary could not be spawned
+					log("hint: Tier-0 detection unavailable — is `ip` installed? (pkg install iproute2)");
+				}
 				lastState = state;
 			}
 

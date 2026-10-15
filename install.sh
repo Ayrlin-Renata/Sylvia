@@ -3,7 +3,7 @@
 #  Sylvia — consolidated agentic-AI harness installer for Android (Termux)
 # =============================================================================
 #  Installs, end to end:
-#    1. Termux base packages     nodejs-lts, git, bash, tmux, android-tools (adb), rclone, uv, nmap
+#    1. Termux base packages     nodejs-lts, git, bash, tmux, android-tools (adb), rclone, uv, nmap, iproute2
 #    2. DSH Mobile CLI           npm -g @deepseek-ai/dsh
 #    3. Mobile/Android patches   Ayrlin-Renata fork -> 12 local rc.7 tarballs
 #    4. sylvia-mcp server        ADB loopback / Tasker XML / rclone JSON / network+resource+discovery
@@ -112,9 +112,10 @@ module_base_packages() {
   have node  || missing+=(nodejs-lts)      # Node ^22.19 || >=24 for node:sqlite
   have uv    || missing+=(uv)              # mitmproxy install + mitmproxy-mcp launcher
   have nmap  || missing+=(nmap)            # LAN discovery (daemon discovery_scan tool)
+  have ip    || missing+=(iproute2)        # 'ip' binary — daemon Tier-0 network detection
 
   if [ ${#missing[@]} -eq 0 ]; then
-    skip "all base packages present (git, bash, adb, rclone, tmux, node, uv, nmap)"
+    skip "all base packages present (git, bash, adb, rclone, tmux, node, uv, nmap, iproute2)"
   else
     note "installing: ${missing[*]}"
     pkg update -y >/dev/null 2>&1 || warn "pkg update returned non-zero; continuing"
