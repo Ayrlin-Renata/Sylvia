@@ -228,30 +228,68 @@ module_dsh_patch() {
     skip "fork already cloned ($fork_dir)"
   fi
 
-  # The fork patcher runs its own `npm install -g` (@deepseek-ai/dsh@rc.6 + 12 local
-  # tarballs). That install ALSO builds the koffi native addon, which always fails on
-  # Termux (loader keys off process.platform="linux", grabs the glibc .node, cannot
-  # dlopen on bionic, falls back to a CMake source build). npm_config_ignore_scripts
-  # makes the patcher's install skip that build transparently — the rc.7 packages ship
-  # prebuilt tarballs and DSH treats these native addons as optional/lazy, so nothing
-  # downstream needs them compiled.
-  #
-  # Clear any half-built global DSH tree first: reconciling over the leftover tree from
-  # a prior failed/standalone install is what made arborist crash
-  # ("Cannot read properties of null (reading 'children')"). A clean target install is
-  # the robust path and is idempotent (the canary above short-circuits once applied).
+  # Clear any half-built global DSH tree + npm's global lock first, so arborist
+  # never reconciles over stale state (idempotent: the canary above short-circuits
+  # once a COMPLETE install is present).
   npm uninstall --global @deepseek-ai/dsh dsh >/dev/null 2>&1 || true
   rm -rf "${PREFIX:-/data/data/com.termux/files/usr}/lib/node_modules/@deepseek-ai" \
          "${PREFIX:-/data/data/com.termux/files/usr}/bin/dsh" 2>/dev/null || true
+  rm -f "${PREFIX:-/data/data/com.termux/files/usr}/lib/node_modules/.package-lock.json" 2>/dev/null || true
 
-  note "running fork patcher (install/install.sh)"
-  npm_config_ignore_scripts=1 bash "$fork_dir/install/install.sh" \
-    || die "fork patcher (install/install.sh) failed"
+  # The fork's install.sh issues ONE `npm install -g` with all 13 specs at once.
+  # Under npm 11 that single multi-spec command reliably crashes arborist's
+  # ideal-tree builder: "Cannot read properties of null (reading 'children')".
+  # A one-package-per-invocation install never enters that code path, so we
+  # replicate the patcher here spec-by-spec instead of calling it. The specs are
+  # identical (CLI @deepseek-ai/dsh@0.1.0-rc.6 from the registry + the 12 local
+  # rc.7 tarballs beside it), so the result is byte-for-byte the same install.
+  #
+  # npm_config_ignore_scripts=1 skips the native-addon builds (koffi/sharp/node-pty).
+  # Those ALWAYS fail on Termux — their loaders key off process.platform ("linux", not
+  # "android"), grab the glibc default .node, cannot dlopen it on bionic, and fall back
+  # to a from-source build needing CMake (absent). The rc.7 packages already make these
+  # optional/lazy, so nothing downstream needs them compiled.
+  local inst_dir="$fork_dir/install"
+  local specs=(
+    "@deepseek-ai/dsh@0.1.0-rc.6"
+    "$inst_dir/deepseek-ai-dsh-client-ui-layout-0.1.0-rc.7.tgz"
+    "$inst_dir/deepseek-ai-dsh-subprocess-local-0.1.0-rc.7.tgz"
+    "$inst_dir/deepseek-ai-dsh-terminal-bash-0.1.0-rc.7.tgz"
+    "$inst_dir/deepseek-ai-dsh-sandbox-0.1.0-rc.7.tgz"
+    "$inst_dir/deepseek-ai-dsh-sandbox-local-0.1.0-rc.7.tgz"
+    "$inst_dir/deepseek-ai-dsh-fs-local-0.1.0-rc.7.tgz"
+    "$inst_dir/deepseek-ai-dsh-session-persistence-jsonl-0.1.0-rc.7.tgz"
+    "$inst_dir/deepseek-ai-dsh-attachment-local-0.1.0-rc.7.tgz"
+    "$inst_dir/deepseek-ai-dsh-host-directory-picker-native-0.1.0-rc.7.tgz"
+    "$inst_dir/deepseek-ai-dsh-client-modules-0.1.0-rc.7.tgz"
+    "$inst_dir/deepseek-ai-dsh-host-directory-picker-browse-0.1.0-rc.7.tgz"
+    "$inst_dir/deepseek-ai-dsh-client-ui-directory-picker-browse-0.1.0-rc.7.tgz"
+  )
+  local spec pkgname pkgdir
+  note "installing CLI rc.6 + 12 rc.7 packages (one npm call each, native builds skipped)"
+  for spec in "${specs[@]}"; do
+    [ -f "$spec" ] || case "$spec" in
+      *.tgz) die "fork tarball missing: $spec — delete $fork_dir and re-run to re-clone" ;;
+    esac
+    # npm's exit code can be non-zero purely because an OPTIONAL native-addon build
+    # script failed (koffi/sharp/node-pty) — that is expected and harmless on Termux,
+    # since the rc.7 packages make those addons lazy. So don't trust the exit code;
+    # install best-effort, then verify the package actually landed on disk.
+    npm_config_ignore_scripts=1 npm install --global "$spec" >/dev/null 2>&1 || true
+    case "$spec" in
+      # Registry spec (@deepseek-ai/dsh@x.y.z) → installed under the @deepseek-ai scope.
+      @*/*) pkgname="${spec%%@*}" ;;        # "@deepseek-ai/dsh@0.1.0-rc.6" → "@deepseek-ai/dsh"
+      *.tgz) pkgname="$(basename "$spec")"; pkgname="${pkgname%.tgz}" ;;  # scoped tarball name
+    esac
+    pkgdir="$GMP/$pkgname"
+    [ -f "$pkgdir/package.json" ] \
+      || die "npm install -g did not produce $pkgdir — the package is genuinely broken (re-run to retry)."
+  done
 
   local sib2
   for sib2 in dsh "${dsh_siblings[@]}"; do
     [ -f "$GMP/$sib2/package.json" ] \
-      || die "patcher finished but $GMP/$sib2/package.json is still missing — re-run to repair."
+      || die "after installing all specs, $GMP/$sib2/package.json is still missing — re-run to repair."
   done
   ok "mobile/Android patches applied (CLI rc.6 + 12 rc.7 packages)"
 }

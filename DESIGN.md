@@ -427,6 +427,7 @@ Rationale: structured JSON over a DB (matches the existing state-management appr
 | local webservers | formalized **module system** (§9): config protocol + generic actions + behavior modes | modules self-describe settings (no per-module UI code); `always` modules are exactly netgate's managed traffic; Tasker mode reuses `tasker_write_and_reload` |
 | patcher idempotency canary | **all-or-nothing** (CLI rc.6 + all 12 rc.7 packages), never a single package | a single-package canary misreported partial installs as "done", skipping both cleanup and install and stranding a broken tree with no repair path |
 | installer footprint removal | separate **uninstall.sh** (opt-in `--remove-dsh` / `--remove-packages`, `--dry-run`) | dev/emulator iteration needs a clean slate; must never touch non-Sylvia DSH profiles or generic Termux packages by default |
+| DSH CLI + rc.7 packages install | **one `npm install -g` per package** (replicate the fork's 13 specs ourselves), not the fork's single 13-package call | under npm 11 the one-big multi-spec command deterministically crashes arborist's ideal-tree builder (`Cannot read properties of null (reading 'children')`), even on a fresh tree; a single-spec-per-invocation install never enters that code path. Same 13 specs → identical result |
 
 ## 15. Open questions / verify in emulator
 
