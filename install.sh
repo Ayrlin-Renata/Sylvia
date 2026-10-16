@@ -11,7 +11,8 @@
 #    6. sylvia-bridge plugin     DSH harness gating (pause on metered / offline-gap context)
 #    7. MCP registration         appends entries to ~/.dsh/profiles/web/cordis.patch.yml
 #    8. Launchers + env          start-sylvia.sh, sylvia-adb-connect.sh, sylvia.env
-#    9. mitmproxy + its MCP      CLI via `uv tool install`, mitmproxy-mcp source
+#    9. mitmproxy + its MCP      CLI + server via prebuilt wheelhouse if given
+#                                (build-wheelhouse.sh), else source build
 #    10. Local modules           SillyTavern + mDNS reference modules -> module manager (§9)
 #  Optional:
 #    11. tasker-mcp              (--with-tasker) Go binary + Tasker HTTP API bridge
@@ -40,6 +41,10 @@
 #      SYLVIA_ADB_PORT       loopback ADB port                (default 5555 = emulator)
 #      SYLVIA_ADB_MODE       auto | emulator                  (default auto)
 #      SYLVIA_TASKER_API_KEY required only with --with-tasker
+#      SYLVIA_WHEELHOUSE_DIR  dir holding sylvia-wheelhouse-<arch>-cp<ver>.tar.gz
+#                             (prebuilt mitmproxy; made by build-wheelhouse.sh)
+#      SYLVIA_WHEELHOUSE_URL  URL of that tarball (downloaded once, then cached)
+#      SYLVIA_MIN_FREE_MB     disk floor before mitmproxy source build (default 3072)
 # =============================================================================
 # -E (errtrace) so the ERR trap fires inside functions too — otherwise a
 # failure mid-module exits silently instead of printing the module banner.
@@ -609,7 +614,24 @@ EOF
   # --- mitmproxy-mcp --------------------------------------------------------
   {
     local mitm_dir="$SYLVIA_HOME/mitmproxy-mcp"
-    _cordis_append "mitmproxy-mcp" "$(cat <<EOF
+    # Prefer the persistent uv tool (installed by the wheelhouse path): no
+    # launch-time dependency resolution at all. Otherwise fall back to uvx,
+    # which resolves from the local source dir on each cold start.
+    if [ -x "$HOME/.local/bin/mitmproxy-mcp" ]; then
+      _cordis_append "mitmproxy-mcp" "$(cat <<EOF
+- id: mitmproxy-mcp
+  name: "@deepseek-ai/dsh-mcp-client"
+  config:
+    transport: "stdio"
+    serverName: mitmproxy
+    command: "$HOME/.local/bin/mitmproxy-mcp"
+    args: []
+    cwd: "$mitm_dir"
+    toolCallTimeoutMs: 30000
+EOF
+)"
+    else
+      _cordis_append "mitmproxy-mcp" "$(cat <<EOF
 - id: mitmproxy-mcp
   name: "@deepseek-ai/dsh-mcp-client"
   config:
@@ -624,6 +646,7 @@ EOF
     toolCallTimeoutMs: 30000
 EOF
 )"
+    fi
   }
 }
 
@@ -792,14 +815,146 @@ module_tasker_mcp() {
 # toolchain is installed just-in-time here, only when mitmdump is missing —
 # a one-time source build that can take several minutes. References:
 # termux-packages#25440 (mitmproxy build), #16746 (the CFLAGS below are
+# Free MB on the filesystem holding $HOME (echoes 0 when df is unparseable).
+sylvia_free_mb() {
+  local _kb
+  _kb=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+  case "$_kb" in ''|*[!0-9]*) echo 0 ;; *) echo $(( _kb / 1024 )) ;; esac
+}
+
+# Reclaim package-manager caches (safe: re-downloadable). Source builds leave
+# large debris behind after a failed run — this clears it before retrying.
+sylvia_reclaim_caches() {
+  npm cache clean --force >/dev/null 2>&1 || true
+  uv cache clean >/dev/null 2>&1 || true
+  apt clean >/dev/null 2>&1 || true
+}
+
+# uv installs tool executables (mitmdump, mitmproxy-mcp, ...) to ~/.local/bin.
+# Make them visible to THIS run and to future shells. Idempotent.
+sylvia_ensure_local_bin() {
+  case ":$PATH:" in *":$HOME/.local/bin:"*) : ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac
+  grep -q '.local/bin' "$HOME/.bashrc" 2>/dev/null \
+    || echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+}
+
+# Resolve + validate a prebuilt wheelhouse (see build-wheelhouse.sh) into
+# $SYLVIA_HOME/wheelhouse. Sets WHEELHOUSE_DIR and returns 0 on success.
+# The tarball name AND its manifest must both match this device's arch and
+# CPython version — a wheelhouse from a different device/ABI cannot work, so
+# a mismatch is a warning + source-build fallback, never a hard install.
+WHEELHOUSE_DIR=""
+sylvia_wheelhouse_resolve() {
+  local tarball="" arch pyver expected
+  arch=$(uname -m)
+  pyver=$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo unknown)
+  expected="sylvia-wheelhouse-$arch-cp${pyver/./}.tar.gz"
+
+  if [ -n "${SYLVIA_WHEELHOUSE_DIR:-}" ]; then
+    if [ -f "${SYLVIA_WHEELHOUSE_DIR%/}/$expected" ]; then
+      tarball="${SYLVIA_WHEELHOUSE_DIR%/}/$expected"
+    else
+      warn "no wheelhouse for this device in $SYLVIA_WHEELHOUSE_DIR (want $expected)"
+      return 1
+    fi
+  elif [ -n "${SYLVIA_WHEELHOUSE_URL:-}" ]; then
+    local base dl
+    base=$(basename "${SYLVIA_WHEELHOUSE_URL%%\?*}")
+    dl="$SYLVIA_HOME/downloads/$base"
+    if [ ! -f "$dl" ]; then
+      ensure_dir "$SYLVIA_HOME/downloads"
+      note "downloading wheelhouse: $SYLVIA_WHEELHOUSE_URL"
+      if ! curl -fL --retry 3 -o "$dl.part" "$SYLVIA_WHEELHOUSE_URL"; then
+        rm -f "$dl.part"
+        warn "wheelhouse download failed"
+        return 1
+      fi
+      mv "$dl.part" "$dl"
+    fi
+    tarball="$dl"
+  else
+    return 1
+  fi
+
+  # Trust, but verify: even a correctly-named file may be a stale build.
+  local tmp m_arch m_py
+  tmp=$(mktemp -d)
+  if ! tar -xzf "$tarball" -C "$tmp" 2>/dev/null; then
+    rm -rf "$tmp"; warn "wheelhouse tarball unreadable: $tarball"
+    return 1
+  fi
+  m_arch=$(sed -n 's/^arch=//p' "$tmp/manifest.txt" 2>/dev/null | head -1)
+  m_py=$(sed -n 's/^python=//p' "$tmp/manifest.txt" 2>/dev/null | head -1)
+  if [ "$m_arch" != "$arch" ] || [ "$m_py" != "$pyver" ]; then
+    warn "wheelhouse built for arch=$m_arch python=$m_py, but this device is arch=$arch python=$pyver — ignoring it (source build will be used)"
+    rm -rf "$tmp"
+    return 1
+  fi
+  rm -rf "$SYLVIA_HOME/wheelhouse"
+  mv "$tmp" "$SYLVIA_HOME/wheelhouse"
+  WHEELHOUSE_DIR="$SYLVIA_HOME/wheelhouse"
+  return 0
+}
+
 # mandatory for ruamel.yaml.clib), drygdryg's gist (proven recipe).
 module_mitm_mcp() {
   CURRENT_MODULE="mitmproxy"
+  sylvia_ensure_local_bin   # so `have mitmdump` sees ~/.local/bin right away
+
+  # 0. Prebuilt wheelhouse fast path (build-wheelhouse.sh): installs BOTH the
+  #    mitmproxy CLI and the mitmproxy-mcp server as persistent uv tools,
+  #    fully offline, skipping the source build entirely. On any failure we
+  #    fall through to the source path below — the wheelhouse is an
+  #    optimization, never a requirement.
+  local used_wheelhouse=0
+  if sylvia_wheelhouse_resolve; then
+    note "installing from prebuilt wheelhouse ($WHEELHOUSE_DIR)"
+    if ! have mitmdump; then
+      if uv tool install --find-links "$WHEELHOUSE_DIR" --no-index mitmproxy; then
+        ok "mitmproxy CLI installed from wheelhouse ($(command -v mitmdump))"
+        used_wheelhouse=1
+      else
+        warn "wheelhouse install of mitmproxy failed — falling back to source build"
+      fi
+    fi
+    # Persistent tool replaces the launch-time `uvx` (which would otherwise
+    # re-resolve mitmproxy's whole tree on first start). Built by
+    # build-wheelhouse.sh with its requires-python pin already relaxed.
+    if ! have mitmproxy-mcp; then
+      if uv tool install --find-links "$WHEELHOUSE_DIR" --no-index mitmproxy-mcp; then
+        ok "mitmproxy-mcp installed from wheelhouse (persistent tool, no uvx)"
+        used_wheelhouse=1
+      elif [ "$used_wheelhouse" -eq 0 ]; then
+        warn "wheelhouse install of mitmproxy-mcp failed — uvx fallback will be used"
+      fi
+    fi
+  fi
 
   # 1. mitmproxy CLI on PATH (uv-managed tool env; skip if already present).
   if have mitmdump; then
     skip "mitmproxy CLI already installed ($(command -v mitmdump))"
   else
+    # Preflight: source builds (cmake bootstrap, rust crates) peak at multiple
+    # GB. Check BEFORE touching pkg/apt, reclaim caches if low, die with
+    # actionable advice instead of hitting ENOSPC mid-build.
+    local min_mb="${SYLVIA_MIN_FREE_MB:-3072}"
+    local free_mb
+    free_mb=$(sylvia_free_mb)
+    if [ "$free_mb" -lt "$min_mb" ]; then
+      note "only ${free_mb}MB free (need ${min_mb}MB) — reclaiming package caches first"
+      sylvia_reclaim_caches
+      free_mb=$(sylvia_free_mb)
+      if [ "$free_mb" -lt "$min_mb" ]; then
+        die "low disk space: ${free_mb}MB free, need ${min_mb}MB to source-build mitmproxy.
+       Check with:  df -h
+       Fix: free space on the device. On an emulator, enlarge the AVD data
+       partition (config.ini: disk.dataPartition.size=16G, then cold-boot or
+       recreate the AVD).  You can lower the threshold only if you are sure:
+       SYLVIA_MIN_FREE_MB=<MB> bash install.sh"
+      fi
+      ok "disk after reclaim: ${free_mb}MB free"
+    fi
+
     # Each dep is have-checked, so a pre-existing toolchain is reused as-is.
     local build_deps=()
     have cargo      || build_deps+=(rust)       # bcrypt/cryptography/pylsqpack (Rust)
@@ -819,15 +974,40 @@ module_mitm_mcp() {
       fi
       record_packages "${build_deps[@]}"
     fi
+
+    # The build: stream output to a log so ENOSPC can be detected. One
+    # cache-reclaim retry (failed builds leave debris that itself fills disk).
     note "building mitmproxy from source (no android wheels on PyPI; one-time, can take minutes)"
     # -Wno-incompatible-function-pointer-types: required to compile
     # ruamel.yaml.clib with Termux clang>=15 (termux-packages#16746).
-    if ! CFLAGS="-Wno-incompatible-function-pointer-types" uv tool install mitmproxy; then
+    local mitm_log="$SYLVIA_HOME/.mitmproxy-build.log"
+    ensure_dir "$SYLVIA_HOME"
+    : > "$mitm_log"
+    local mitm_attempt
+    for mitm_attempt in 1 2; do
+      if CFLAGS="-Wno-incompatible-function-pointer-types" \
+          uv tool install mitmproxy 2>&1 | tee -a "$mitm_log"; then
+        break
+      fi
+      if grep -q "No space left on device" "$mitm_log" 2>/dev/null; then
+        if [ "$mitm_attempt" -eq 1 ]; then
+          warn "build ran out of disk space — reclaiming caches and retrying once"
+          sylvia_reclaim_caches
+          free_mb=$(sylvia_free_mb)
+          note "free space now: ${free_mb}MB"
+          continue
+        fi
+        die "mitmproxy build is out of disk space (again: ${free_mb}MB free).
+       Full log: $mitm_log
+       Check with:  df -h  — free space or enlarge the AVD data partition
+       (config.ini: disk.dataPartition.size=16G), then re-run this installer."
+      fi
       die "uv tool install mitmproxy failed (source build).
+       Full log: $mitm_log
        The build toolchain was installed above. Verify manually with:
          pkg install rust binutils clang make pkg-config openssl
          CFLAGS='-Wno-incompatible-function-pointer-types' uv tool install mitmproxy"
-    fi
+    done
     have mitmdump || {
       # uv installs tool executables to ~/.local/bin; ensure it is on PATH for
       # this session and for future shells before declaring success.
@@ -852,6 +1032,16 @@ module_mitm_mcp() {
     git clone --depth 1 https://github.com/snapspecter/mitmproxy-mcp.git "$dir" || die "git clone of mitmproxy-mcp failed"
   fi
   ok "mitmproxy-mcp source ready ($dir)"
+
+  # Upstream pins 'requires-python = ">=3.12,<3.14"', which rejects Termux's
+  # python 3.14 even though mitmproxy 12.2.3 itself supports 3.14 — without
+  # this, `uvx --from <dir> mitmproxy-mcp` fails at first launch. Relax the
+  # pin in place (idempotent).
+  if grep -q 'requires-python = ">=3.12,<3.14"' "$dir/pyproject.toml" 2>/dev/null; then
+    sed -i.bak 's/requires-python = ">=3.12,<3.14"/requires-python = ">=3.12,<'\
+'3.15"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.bak"
+    note "relaxed mitmproxy-mcp requires-python pin (<3.14 -> <3.15) for python $(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+  fi
 }
 
 # =============================================================================

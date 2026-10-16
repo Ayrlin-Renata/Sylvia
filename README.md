@@ -95,13 +95,15 @@ re-run the same command.
 6. **MCP registration** — appends the server entries to
    `~/.dsh/profiles/web/cordis.patch.yml`. This is **non-destructive**: it only appends,
    never rewrites, and skips any entry already present by `id`.
-7. **mitmproxy + `mitmproxy-mcp`** — installs the mitmproxy CLI via
-   `uv tool install mitmproxy` and clones the `mitmproxy-mcp` MCP server, which is
-   registered and run through `uvx`. PyPI has **no Android wheels** for mitmproxy's
-   native deps (`bcrypt`, `cryptography`, `cffi`, ...), so this builds them from
-   source: the installer adds the Rust/C toolchain (`rust`, `binutils`, `clang`,
-   `make`, `pkg-config`, `openssl` — only what's missing) just for this step.
-   The first build can take several minutes; later runs skip it entirely.
+7. **mitmproxy + `mitmproxy-mcp`** — installs the mitmproxy CLI and the `mitmproxy-mcp`
+   MCP server. **If you provide a prebuilt wheelhouse** (see §3.1), both install as
+   persistent uv tools, fully offline, in seconds. Otherwise PyPI has **no Android
+   wheels** for mitmproxy's native deps (`bcrypt`, `cryptography`, `cffi`, ...), so the
+   installer builds them from source: it adds the Rust/C toolchain (`rust`, `binutils`,
+   `clang`, `make`, `pkg-config`, `openssl` — only what's missing) just for this step.
+   The first build can take several minutes; later runs skip it entirely. The installer
+   also checks free disk first, reclaims package caches when low, and retries once on
+   `ENOSPC` instead of dying mid-build.
 8. **Local module definitions** — SillyTavern and mDNS module skeletons under
    `~/.sylvia/modules/`, manageable from the control panel.
 
@@ -128,6 +130,38 @@ Useful environment variables (all optional):
 | `SYLVIA_ADB_MODE` | `auto` | `auto` \| `emulator` — how the loopback is discovered |
 | `SYLVIA_DSH_REPO` | your DSH Mobile fork | Override the patcher source |
 | `SYLVIA_TASKER_API_KEY` | — | Required only with `--with-tasker` |
+| `SYLVIA_WHEELHOUSE_DIR` | — | Dir containing a prebuilt `sylvia-wheelhouse-<arch>-cp<ver>.tar.gz` |
+| `SYLVIA_WHEELHOUSE_URL` | — | URL of that tarball (downloaded once, cached under `~/.sylvia/downloads`) |
+| `SYLVIA_MIN_FREE_MB` | `3072` | Disk floor before the mitmproxy source build |
+
+### 3.1 Prebuilt wheelhouse (optional, recommended after the first device)
+
+The mitmproxy source build is the slowest, most fragile part of the install. If you
+already paid that cost once on a device, `build-wheelhouse.sh` turns the result into a
+reusable tarball so every later install on that device is fast and fully offline:
+
+```sh
+# ON THE DEVICE (once — phone and emulator each need their own):
+bash build-wheelhouse.sh
+#   -> wheelhouse/sylvia-wheelhouse-aarch64-cp314.tar.gz   (example name)
+
+# Later installs on the SAME device:
+SYLVIA_WHEELHOUSE_DIR="$HOME/Sylvia/wheelhouse" bash install.sh
+# or copy the tarball anywhere and let the installer fetch it:
+SYLVIA_WHEELHOUSE_URL="https://example.com/sylvia-wheelhouse-aarch64-cp314.tar.gz" bash install.sh
+```
+
+**Per-device, not universal** — native wheels embed the CPU arch and the CPython ABI, so
+an x86_64 emulator wheelhouse will not run on an arm64 phone (and vice versa), and a
+Termux Python upgrade invalidates the ABI. The installer validates the tarball's
+manifest against the running device and silently falls back to a source build on any
+mismatch — the wheelhouse only ever speeds things up, never breaks the install.
+
+When a wheelhouse install succeeds, `mitmproxy-mcp` is registered as a **persistent uv
+tool** (`~/.local/bin/mitmproxy-mcp`) instead of `uvx`, so the first DSH launch does no
+dependency resolution at all. Without it, the `uvx` fallback still works — the installer
+relaxes mitmproxy-mcp's upstream `requires-python <3.14` pin in the cloned source so it
+installs on Termux's Python 3.14.
 
 ### Reconciling with an existing DSH Mobile install
 
