@@ -132,9 +132,13 @@ module_base_packages() {
   have nmap  || missing+=(nmap)            # LAN discovery (daemon discovery_scan tool)
   have ip    || missing+=(iproute2)        # 'ip' binary — daemon Tier-0 network detection
   have python || missing+=(python)         # uv/uvx interpreter (mitmproxy CLI + mitmproxy-mcp)
+  # termux-api = the termux-* CLI stubs (termux-wake-lock etc.). The companion
+  # Termux:API *app* (F-Droid) is a separate manual install; without it the
+  # stubs are present but no-ops, which is harmless.
+  have termux-wake-lock || missing+=(termux-api)
 
   if [ ${#missing[@]} -eq 0 ]; then
-    skip "all base packages present (git, bash, adb, rclone, tmux, node, uv, nmap, iproute2, python)"
+    skip "all base packages present (git, bash, adb, rclone, tmux, node, uv, nmap, iproute2, python, termux-api)"
   else
     note "installing: ${missing[*]}"
     pkg update -y >/dev/null 2>&1 || warn "pkg update returned non-zero; continuing"
@@ -963,6 +967,12 @@ module_mitm_mcp() {
     have make       || build_deps+=(make)       # some sdists drive make
     have pkg-config || build_deps+=(pkg-config) # cryptography locates OpenSSL with it
     have openssl    || build_deps+=(openssl)    # cryptography's build needs its headers
+    # argon2-cffi-bindings >=26 (pulled in by mitmproxy) uses scikit-build-core,
+    # which otherwise DOWNLOADS and COMPILES CMake from source when PyPI ships no
+    # cmake wheel for the platform (Android) — a slow bootstrap that can crash the
+    # build (exit 11). A system cmake on PATH is used instead and skips it
+    # entirely (hynek/argon2-cffi-bindings#142). Native pkg, cheap to keep.
+    have cmake      || build_deps+=(cmake)
     if [ ${#build_deps[@]} -gt 0 ]; then
       note "installing mitmproxy build toolchain: ${build_deps[*]}"
       pkg update -y >/dev/null 2>&1 || warn "pkg update returned non-zero; continuing"
@@ -1005,7 +1015,7 @@ module_mitm_mcp() {
       die "uv tool install mitmproxy failed (source build).
        Full log: $mitm_log
        The build toolchain was installed above. Verify manually with:
-         pkg install rust binutils clang make pkg-config openssl
+         pkg install rust binutils clang make pkg-config openssl cmake
          CFLAGS='-Wno-incompatible-function-pointer-types' uv tool install mitmproxy"
     done
     have mitmdump || {

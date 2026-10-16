@@ -22,15 +22,9 @@ them from the linked source.
 | **Termux** | [F-Droid](https://f-droid.org/en/packages/com.termux/) **or** the [GitHub releases](https://github.com/termux/termux-app/releases) — **not** the Play Store build, which is stale and will fail on `nodejs-lts` | The Linux container the whole stack runs inside |
 | **Tasker** | [Play Store](https://play.google.com/store/apps/details?id=net.dinglisch.android.taskerm) | Existing-task automation via its HTTP API (bridge) and new-profile authoring via direct XML write |
 
-> **rclone** is installed inside Termux by the installer (via `pkg`) — use that build, not
-> the Play Store app, which is a different package and not what the tools call.
-
 For **Tasker-related** features, also install (nothing auto-installs these — set them up
 yourself, then the agent can use them):
 
-- **Termux:API** ([F-Droid](https://f-droid.org/en/packages/com.termux.api/), same publisher as Termux) —
-  the `termux-*` CLI tools (incl. `termux-wake-lock`, which the launcher uses to keep the
-  harness alive when the screen is off) and Tasker↔Termux interop.
 - **Termux:Tasker** ([F-Droid](https://f-droid.org/en/packages/com.termux.tasker/)) — lets Tasker run
   commands inside Termux directly.
 - **Shizuku** ([Play Store](https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api)) —
@@ -48,11 +42,10 @@ it is used only as a test bed (see §6).
 
 ## 2. One-line install
 
-Open Termux and run:
+Open Termux and run (paste the whole line at once):
 
 ```sh
-pkg upgrade -y -o Dpkg::Options::=--force-confnew && pkg install -y curl
-curl -fsSL https://raw.githubusercontent.com/Ayrlin-Renata/Sylvia/main/install.sh | bash -s -- --force-confnew
+pkg install -y curl && curl -fsSL https://raw.githubusercontent.com/Ayrlin-Renata/Sylvia/main/install.sh | bash -s -- --force-confnew
 ```
 
 > **About `--force-confnew`:** during a fresh install, `pkg`/`dpkg` stops and asks whether
@@ -77,7 +70,8 @@ re-run the same command.
 
 1. **Termux base packages** — `nodejs-lts`, `git`, `bash`, `tmux`, `android-tools` (provides
    `adb`), `rclone`, `uv`, `nmap`, `iproute2` (provides `ip`, used for network detection),
-   `python` (interpreter for `uv`/`uvx` → mitmproxy).
+   `python` (interpreter for `uv`/`uvx` → mitmproxy), `termux-api` (the `termux-*` CLI
+   stubs, e.g. `termux-wake-lock` — the companion app is optional).
 2. **DSH CLI + mobile/Android patches** — clones your
    [`Ayrlin-Renata/Deepseek-harness-mobile`](https://github.com/Ayrlin-Renata/Deepseek-harness-mobile)
    fork, then installs the CLI (`@deepseek-ai/dsh`) and overlays the 12 local `rc.7`
@@ -100,7 +94,9 @@ re-run the same command.
    persistent uv tools, fully offline, in seconds. Otherwise PyPI has **no Android
    wheels** for mitmproxy's native deps (`bcrypt`, `cryptography`, `cffi`, ...), so the
    installer builds them from source: it adds the Rust/C toolchain (`rust`, `binutils`,
-   `clang`, `make`, `pkg-config`, `openssl` — only what's missing) just for this step.
+   `clang`, `make`, `pkg-config`, `openssl`, `cmake` — only what's missing) just for this
+   step. (`cmake` matters: without it, `argon2-cffi-bindings` ≥26 tries to download and
+   compile CMake from source — see [upstream issue #142](https://github.com/hynek/argon2-cffi-bindings/issues/142).)
    The first build can take several minutes; later runs skip it entirely. The installer
    also checks free disk first, reclaims package caches when low, and retries once on
    `ENOSPC` instead of dying mid-build.
@@ -142,7 +138,7 @@ reusable tarball so every later install on that device is fast and fully offline
 
 ```sh
 # ON THE DEVICE (once — phone and emulator each need their own):
-bash build-wheelhouse.sh
+bash build-wheelhouse.sh --cleanup
 #   -> wheelhouse/sylvia-wheelhouse-aarch64-cp314.tar.gz   (example name)
 
 # Later installs on the SAME device:
@@ -150,6 +146,12 @@ SYLVIA_WHEELHOUSE_DIR="$HOME/Sylvia/wheelhouse" bash install.sh
 # or copy the tarball anywhere and let the installer fetch it:
 SYLVIA_WHEELHOUSE_URL="https://example.com/sylvia-wheelhouse-aarch64-cp314.tar.gz" bash install.sh
 ```
+
+`--cleanup` (optional) removes the build-only toolchain (`rust`, `binutils`, `clang`,
+`make`, `pkg-config`, `cmake`) and uv's build scratch after the tarball is written —
+reclaiming ~2 GB — since a wheelhouse install never compiles anything again. It keeps
+`openssl` (a runtime dependency of curl/git/python) and can be re-run later; the
+toolchain is reinstalled automatically if you ever build again without a wheelhouse.
 
 **Per-device, not universal** — native wheels embed the CPU arch and the CPython ABI, so
 an x86_64 emulator wheelhouse will not run on an arm64 phone (and vice versa), and a

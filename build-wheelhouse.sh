@@ -33,6 +33,11 @@
 #
 #  Flags:
 #    --force-confnew   pkg installs use -o Dpkg::Options::=--force-confnew
+#    --cleanup         after the tarball is written, remove the build-only
+#                      toolchain (rust binutils clang make pkg-config cmake)
+#                      + uv build scratch — reclaims ~2GB. Keeps openssl
+#                      (runtime dep of curl/git/python). Safe to re-run the
+#                      toolchain install later via install.sh if needed.
 #    -h, --help        this text
 #
 #  Environment:
@@ -61,7 +66,8 @@ have() { command -v "$1" >/dev/null 2>&1; }
 for arg in "$@"; do
   case "$arg" in
     --force-confnew) FORCE_CONFNEW=1 ;;
-    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+    --cleanup) CLEANUP_TOOLCHAIN=1 ;;
+    -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
     *) die "unknown argument: $arg (see --help)" ;;
   esac
 done
@@ -115,6 +121,10 @@ have clang      || build_deps+=(clang)      # C/C++ extensions (cffi, curl-cffi,
 have make       || build_deps+=(make)       # some sdists drive make
 have pkg-config || build_deps+=(pkg-config) # cryptography locates OpenSSL with it
 have openssl    || build_deps+=(openssl)    # cryptography/curl-cffi build headers
+# argon2-cffi-bindings >=26 uses scikit-build-core, which DOWNLOADS + COMPILES
+# CMake from source when PyPI has no cmake wheel (Android) — slow, crash-prone
+# bootstrap. System cmake on PATH skips it (hynek/argon2-cffi-bindings#142).
+have cmake      || build_deps+=(cmake)
 if [ ${#build_deps[@]} -gt 0 ]; then
   note "installing build toolchain: ${build_deps[*]}"
   pkg update -y >/dev/null 2>&1 || warn "pkg update returned non-zero; continuing"
@@ -186,7 +196,7 @@ while :; do
   fi
   die "pip wheel failed. Full log: $BUILD_LOG
    Verify the toolchain manually:
-     pkg install rust binutils clang make pkg-config openssl
+     pkg install rust binutils clang make pkg-config openssl cmake
      python -m pip wheel --wheel-dir \"$OUT_DIR\" ${mitm_args[*]} \"$MCP_DIR\""
 done
 
@@ -214,3 +224,27 @@ note "or serve/copy it somewhere and:"
 note "  SYLVIA_WHEELHOUSE_URL=<url>/$(basename "$TARBALL") bash install.sh"
 note "NOTE: this tarball is valid ONLY for arch=$ARCH + python=$PYVER."
 note "      Build a separate one on each distinct device (phone vs emulator)."
+
+# --- optional cleanup --------------------------------------------------------
+# The toolchain is only needed to BUILD wheels; once the tarball exists, a
+# device that only consumes it (or the same device re-running install.sh with
+# the wheelhouse) never compiles again. openssl is KEPT: it is a runtime lib
+# for curl/git/python, not just a build dep.
+if [ "${CLEANUP_TOOLCHAIN:-0}" -eq 1 ]; then
+  removable=()
+  for pair in cargo:rust ld:binutils clang:clang make:make pkg-config:pkg-config cmake:cmake; do
+    tool=${pair%%:*}; pkg=${pair#*:}
+    if have "$tool"; then removable+=("$pkg"); fi
+  done
+  if [ ${#removable[@]} -gt 0 ]; then
+    note "cleanup: removing build-only toolchain: ${removable[*]} (openssl kept — runtime dep)"
+    pkg uninstall -y "${removable[@]}" || warn "pkg uninstall returned non-zero"
+  else
+    note "cleanup: no build toolchain present"
+  fi
+  # build debris: uv's build/sdist scratch + downloaded sdists (re-fetchable)
+  rm -rf "$HOME/.cache/uv/builds-v0" "$HOME/.cache/uv/sdists-v10" 2>/dev/null || true
+  note "cleanup: cleared uv build scratch (builds-v0, sdists-v10)"
+  free_after=$(df -k "$HOME" | awk 'NR==2 {printf "%d", $4/1024}')
+  note "cleanup: ${free_after}MB free now"
+fi
