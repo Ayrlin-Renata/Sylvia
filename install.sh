@@ -64,6 +64,7 @@ FORCE=0
 FORCE_CONFNEW=0
 WITH_TASKER=0
 CURRENT_MODULE="bootstrap"
+ADB_LOOPBACK_STATUS="not connected"
 
 # ---- tiny output helpers ----------------------------------------------------
 c_reset=$'\033[0m'; c_dim=$'\033[2m'; c_red=$'\033[31m'; c_grn=$'\033[32m'; c_ylw=$'\033[33m'; c_cyn=$'\033[36m'
@@ -630,6 +631,8 @@ EOF
     serverName: mitmproxy
     command: "$HOME/.local/bin/mitmproxy-mcp"
     args: []
+    env:
+      MITMPROXY_AUTO_START: "1"
     cwd: "$mitm_dir"
     toolCallTimeoutMs: 30000
 EOF
@@ -646,6 +649,8 @@ EOF
       - "--from"
       - "$mitm_dir"
       - "mitmproxy-mcp"
+    env:
+      MITMPROXY_AUTO_START: "1"
     cwd: "$mitm_dir"
     toolCallTimeoutMs: 30000
 EOF
@@ -757,6 +762,25 @@ fi
 EOF
   chmod +x "$SYLVIA_HOME/sylvia-adb-connect.sh"
   ok "wrote $SYLVIA_HOME/sylvia-adb-connect.sh"
+}
+
+# =============================================================================
+#  MODULE 8.5 — attempt the ADB loopback now (non-fatal)
+# =============================================================================
+# Best-effort: on an emulator (or with Wireless debugging already enabled) the
+# loopback comes up immediately; otherwise this fails harmlessly and the
+# summary tells the user how to run it later.
+module_adb_connect() {
+  CURRENT_MODULE="adb loopback"
+  ADB_LOOPBACK_STATUS="not connected"
+  if bash "$SYLVIA_HOME/sylvia-adb-connect.sh"; then
+    ADB_LOOPBACK_STATUS="connected"
+    ok "ADB loopback established"
+  else
+    note "could not connect yet — enable Developer options -> Wireless"
+    note "debugging (phone) or start the emulator, then run:"
+    note "  ${SYLVIA_HOME/#$HOME/\~}/sylvia-adb-connect.sh"
+  fi
 }
 
 # =============================================================================
@@ -1059,64 +1083,43 @@ module_mitm_mcp() {
 # =============================================================================
 print_summary() {
   CURRENT_MODULE="summary"
-  printf '\n%s\n' "──────────────────────────────────────────────────────────────"
+  local bar="────────────────────────────────────────────"
+  # Keep every line narrow (Termux on a phone wraps ~50 cols) and only
+  # actionable info: ports + first steps. No paths, no tool listings.
+  printf '\n%s\n' "$bar"
   printf '%sSylvia install complete.%s\n' "$c_grn" "$c_reset"
-  printf '──────────────────────────────────────────────────────────────\n'
+  printf '%s\n' "$bar"
   cat <<EOF
-  Install root   $SYLVIA_HOME
-  sylvia-mcp     $SYLVIA_MCP_DIR
-  sylvia-daemon  $SYLVIA_DAEMON_DIR
-  sylvia-bridge  $SYLVIA_BRIDGE_DIR
-  Cordis config  $CORDIS_FILE
-  Harness port   http://127.0.0.1:${SYLVIA_WEB_PORT}
+  Harness        http://127.0.0.1:${SYLVIA_WEB_PORT}
   Control panel  http://127.0.0.1:${SYLVIA_DAEMON_PORT}
 
-  1. Connect the ADB loopback (the agent's "hands"):
-         tmux new -s sylvia
-         $SYLVIA_HOME/sylvia-adb-connect.sh
+  1. Start the harness (also starts
+     the daemon):
+        ${SYLVIA_HOME/#$HOME/\~}/start-sylvia.sh
 
-     Emulator is auto-detected (port ${SYLVIA_ADB_PORT}). On a physical phone enable
-     Developer options -> Wireless debugging first; the helper discovers the port.
+  2. Open the harness URL and enter
+     your model API key on the
+     Models page.
 
-  2. Start the harness (this also starts sylvia-daemon in the background):
-         $SYLVIA_HOME/start-sylvia.sh
+  3. The control panel URL shows
+     network state, netgate,
+     resources, and modules.
 
-  3. Open http://127.0.0.1:${SYLVIA_WEB_PORT} in the phone browser, enter your model
-     API key on the Models page, and ask the agent to run something, e.g.
-     "use mcp__sylvia__resilient_adb_exec to print the device model".
-
-  4. Open http://127.0.0.1:${SYLVIA_DAEMON_PORT} for the control panel — network
-     state, netgate, resource ownership, and module management.
-
-  Tools surface as:  mcp__sylvia__resilient_adb_exec
-                     mcp__sylvia__tasker_write_and_reload
-                     mcp__sylvia__rclone_exec
-                     mcp__sylvia__network_state
-                     mcp__sylvia__traffic_gate
-                     mcp__sylvia__resource_list
-                     mcp__sylvia__resource_resolve
-                     mcp__sylvia__resource_call
-                     mcp__sylvia__discovery_scan
+  ADB loopback: ${ADB_LOOPBACK_STATUS}
 EOF
-  [ "$WITH_TASKER" -eq 1 ] && cat <<EOF
-
-  tasker-mcp registered. In Tasker, import the MCP server project and confirm the
-  HTTP service listens on 127.0.0.1:1821. Verify the reload broadcast action
-  against your Tasker build (SYLVIA_TASKER_RELOAD_ACTION) in the emulator Logcat.
+  [ "$ADB_LOOPBACK_STATUS" = "not connected" ] && cat <<EOF
+     (enable Wireless debugging or
+     start the emulator, then run
+     ${SYLVIA_HOME/#$HOME/\~}/sylvia-adb-connect.sh)
 EOF
   cat <<EOF
 
-  mitmproxy-mcp registered (uvx). Start a mitmproxy instance before using its tools
-  (e.g. 'mitmdump' is on PATH, or ask the agent to start one via its MCP tools).
+  The web UI is loopback-only and
+  unauthenticated: never add
+  --host 0.0.0.0.
 EOF
-  printf '──────────────────────────────────────────────────────────────\n'
-  cat <<EOF
-
-  Security notes:
-    • Web UI is loopback-only and UNAUTHENTICATED — never add --host 0.0.0.0.
-    • DSH_PERMISSION_MODE=danger-full-access (Android has no sandbox backend).
-      Treat the agent as shell access.
-EOF
+  [ "$WITH_TASKER" -eq 1 ] && printf '  tasker-mcp: import the MCP project\n  in Tasker to finish setup.\n'
+  printf '%s\n' "$bar"
 }
 
 # =============================================================================
@@ -1157,4 +1160,5 @@ module_tasker_mcp
 module_mitm_mcp
 module_register_mcp
 module_launchers
+module_adb_connect
 print_summary

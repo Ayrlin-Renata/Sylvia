@@ -244,7 +244,9 @@ The nine tools surface to the model as:
 ## 6. The ADB loopback (the "hands")
 
 The harness gets root/ADB shell access by connecting Termux's `adb` **to the device's own
-`adbd` over `127.0.0.1`** — no Shizuku, no companion app. The installer writes a helper:
+`adbd` over `127.0.0.1`** — no Shizuku, no companion app. The installer **attempts this
+connection automatically at the end of install**; if it didn't come up (e.g. Wireless
+debugging wasn't enabled yet), run the helper it wrote:
 
 ```sh
 ~/.sylvia/sylvia-adb-connect.sh
@@ -302,8 +304,9 @@ For authoring **new** profiles, use `mcp__sylvia__tasker_write_and_reload` inste
 writes the XML directly and bypasses the HTTP API entirely.
 
 > **Note:** `mitmproxy-mcp` (network interception) is **not** optional — it's installed and
-> registered by default (see §2.8). Just start a mitmproxy instance (`mitmdump`, or ask the
-> agent to start one) before using its tools.
+> registered by default (see §2). The proxy **auto-starts with the server**
+> (`MITMPROXY_AUTO_START=1` in the registration); the agent also has `start_proxy` /
+> `stop_proxy` tools to control it on demand.
 
 ---
 
