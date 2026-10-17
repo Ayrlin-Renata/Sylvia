@@ -647,8 +647,8 @@ function collect(dir) {
   }
 }
 
-collect(join(root, '@deepseek-ai'));                       // fork tarballs etc.
-collect(join(root, 'dsh', 'node_modules', '@deepseek-ai')); // nested tree
+collect(join(root, '@deepseek-ai'));                              // fork tarballs etc.
+collect(join(root, '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai')); // nested CLI tree (the bulk!) — must include the '@deepseek-ai/' segment
 
 const seen = new Set();
 for (const pkgDir of entries) {
