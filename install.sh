@@ -1243,15 +1243,26 @@ EOF
   # edits apply on the next browser refresh (no restart). Seed a starter once
   # and never overwrite — this file is the user/agent's mobile-styling
   # workspace. Missing starter is not fatal: the bridge simply injects nothing.
-  if [ -f "$SCRIPT_DIR/assets/mobile.css" ]; then
-    if [ -f "$SYLVIA_HOME/mobile.css" ]; then
-      skip "$SYLVIA_HOME/mobile.css already exists"
-    else
-      cp "$SCRIPT_DIR/assets/mobile.css" "$SYLVIA_HOME/mobile.css" || die "could not seed $SYLVIA_HOME/mobile.css"
-      ok "seeded $SYLVIA_HOME/mobile.css (edit + browser refresh applies live)"
-    fi
+  if [ -f "$SYLVIA_HOME/mobile.css" ]; then
+    skip "$SYLVIA_HOME/mobile.css already exists"
   else
-    note "starter assets/mobile.css not found beside this script (skipped) — nothing is injected until $SYLVIA_HOME/mobile.css exists"
+    local css_src="$SCRIPT_DIR/assets/mobile.css"
+    if [ ! -f "$css_src" ] && [ ! -f "$SYLVIA_HOME/repo/assets/mobile.css" ]; then
+      # curl | bash runs with no repo beside the script — clone once (shared
+      # with the patches/ module, which may already have done this).
+      ensure_dir "$SYLVIA_HOME"
+      note "cloning Sylvia repo for assets/mobile.css: $SYLVIA_REPO_URL"
+      rm -rf "$SYLVIA_HOME/repo"
+      git clone --depth 1 "$SYLVIA_REPO_URL" "$SYLVIA_HOME/repo" \
+        || note "repo clone failed (skipped) — CSS seam stays inert until $SYLVIA_HOME/mobile.css exists"
+    fi
+    [ -f "$css_src" ] || css_src="$SYLVIA_HOME/repo/assets/mobile.css"
+    if [ -f "$css_src" ]; then
+      cp "$css_src" "$SYLVIA_HOME/mobile.css" || die "could not seed $SYLVIA_HOME/mobile.css"
+      ok "seeded $SYLVIA_HOME/mobile.css (edit + browser refresh applies live)"
+    else
+      note "starter assets/mobile.css not found (skipped) — nothing is injected until $SYLVIA_HOME/mobile.css exists"
+    fi
   fi
 }
 
