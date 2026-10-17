@@ -1105,6 +1105,46 @@ EOF
 }
 
 # =============================================================================
+#  MODULE 8.4 — Termux:Boot autostart (non-fatal; inert unless app installed)
+# =============================================================================
+# Termux:Boot runs every script in ~/.termux/boot/ once, at device boot. We
+# seed a launcher there so the harness survives reboots with zero manual
+# steps. Two platform facts make this graceful rather than fragile:
+#   * The Termux:Boot companion app may not be installed — the script is
+#     seeded anyway (it is inert without the app) and the user is told.
+#   * Android only registers Termux:Boot's receiver after the app has been
+#     opened at least once post-install — we print that reminder.
+module_termux_boot() {
+  CURRENT_MODULE="termux boot"
+  local boot_dir="$HOME/.termux/boot"
+  local boot_script="$boot_dir/10-sylvia.sh"
+  mkdir -p "$boot_dir" || { note "could not create $boot_dir (skipped)"; return 0; }
+
+  if [ -f "$boot_script" ] && [ "${SYLVIA_FORCE:-}" != "1" ]; then
+    skip "$boot_script already exists"
+  else
+    cat > "$boot_script" << 'EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+# Sylvia harness autostart — executed by Termux:Boot once, at device boot.
+# Take the wake lock first so doze does not strangle the harness on boot.
+command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
+exec bash "$HOME/.sylvia/start-sylvia.sh"
+EOF
+    chmod +x "$boot_script"
+    ok "seeded $boot_script (harness autostarts at device boot)"
+  fi
+
+  # Detect the companion app; absent it, the boot script is harmless but dead.
+  if command -v pm >/dev/null 2>&1 && pm list packages 2>/dev/null | grep -q "com.termux.boot"; then
+    note "Termux:Boot installed — if freshly installed, OPEN the app once before"
+    note "the next reboot (Android only registers the boot receiver then)"
+  else
+    note "Termux:Boot app not detected — install it from F-Droid (same source as"
+    note "Termux) and open it once; the seeded script stays inert until then"
+  fi
+}
+
+# =============================================================================
 #  MODULE 8.5 — attempt the ADB loopback now (non-fatal)
 # =============================================================================
 # Best-effort: on an emulator (or with Wireless debugging already enabled) the
@@ -1694,5 +1734,6 @@ module_tasker_mcp
 module_mitm_mcp
 module_register_mcp
 module_launchers
+module_termux_boot
 module_adb_connect
 print_summary

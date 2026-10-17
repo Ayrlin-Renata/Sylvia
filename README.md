@@ -21,6 +21,7 @@ them from the linked source.
 |-----|--------|-----|
 | **Termux** | [F-Droid](https://f-droid.org/en/packages/com.termux/) **or** the [GitHub releases](https://github.com/termux/termux-app/releases) — **not** the Play Store build, which is stale and will fail on `nodejs-lts` | The Linux container the whole stack runs inside |
 | **Tasker** | [Play Store](https://play.google.com/store/apps/details?id=net.dinglisch.android.taskerm) | Existing-task automation via its HTTP API (bridge) and new-profile authoring via direct XML write |
+| **Termux:Boot** (recommended) | [F-Droid](https://f-droid.org/en/packages/com.termux.boot/) | Autostarts the harness at device boot — the installer seeds `~/.termux/boot/10-sylvia.sh`; **open the app once** after installing, since Android only registers its boot receiver on first launch |
 
 For **Tasker-related** features, also install (nothing auto-installs these — set them up
 yourself, then the agent can use them):
@@ -277,6 +278,15 @@ tmux new -s sylvia
 # Ctrl-b d to detach, tmux attach -t sylvia to reattach
 ```
 
+**Autostart at device boot (Termux:Boot):** the installer seeds
+`~/.termux/boot/10-sylvia.sh`, so with the companion app **Termux:Boot**
+([F-Droid](https://f-droid.org/en/packages/com.termux.boot/)) installed the harness
+comes up by itself on every boot (wake-lock included, then `start-sylvia.sh`). Install
+the app from F-Droid and **open it once** — Android only registers its boot receiver on
+the first launch — then verify with a reboot: `http://127.0.0.1:3080` should answer
+without you touching anything. The seeded script is yours after creation; re-run
+`install.sh --force` to regenerate it.
+
 Then open **`http://127.0.0.1:3080`** in the phone browser, enter your model API key on
 the **Models** page, create a session, and send a first command — for example, *"use
 `mcp__sylvia__resilient_adb_exec` to print the device model."*
@@ -424,6 +434,7 @@ with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those
 | Browser shows `Failed to load plugins / web boot: window.__ModuleLoader__ bootstrap facade is missing` | Version skew between the npm-resolved web frontend (rc.8+) and the fork-pinned `dsh-client-modules` (rc.7, predates the facade). Re-run `install.sh` — it aligns `dsh-client-modules` to the frontend version — then hard-refresh the page (Ctrl+F5). |
 | Chat fails with `Failed to load history … maxImageDimension … expected number, received undefined` | The fork's `dsh-attachment-local` (rc.7) predates the rc.8 image-limits projection contract. Re-run `install.sh` — it hash-guard-patches the frozen package bytes with the missing key (keeping the fork's Android fixes) — then reload the session. |
 | `EADDRINUSE … 3080` at launch | A previous harness instance is still running — kill the stale `node … bin.js web` process and relaunch. |
+| Harness not running after a reboot | Termux:Boot autostart isn't active: install the app from F-Droid and **open it once** (the boot receiver registers on first launch), check the seeded script with `ls ~/.termux/boot/`, and re-run `install.sh` if it's missing. |
 | mitmproxy tools missing on first launch | The first `uvx` build is slow — check `~/.sylvia/.mitmproxy-mcp-warm.log`, then re-run `install.sh` (warm build and `patchelf` fixes are idempotent). Reload the MCP servers from the UI if they still don't appear. |
 
 ---
