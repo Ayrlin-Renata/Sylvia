@@ -520,6 +520,78 @@ with no version handshake).
 
 - `reference/` clones are dev-only (never shipped); changes stay local until pushed
   — publishing fork updates needs the user's GitHub auth.
-- Sylvia's tree has **uncommitted** changes (`README.md`, `install.sh`,
-  `sylvia-bridge/lib/index.js`, untracked `patches/`) — commit for a clean
-  rollback point before starting Phase 1.
+- ~~Sylvia's tree has **uncommitted** changes~~ — resolved 2026-10-17: everything
+  (README, install.sh, bridge/daemon fixes, `patches/`, `modules/`, `assets/`)
+  committed and pushed to `Ayrlin-Renata/Sylvia` as `0e47bc3` + `b8f13b0`, so a
+  clean-AVD `git clone`/curl install gets the current tree.
+
+## 17. DSH 0.2.x upgrade assessment (2026-10-17, npm-verified)
+
+All facts below were re-verified firsthand against the npm registry and the local
+0.2.1-alpha.5 install (an earlier relay of unverified subagent claims contained
+registry errors — this section supersedes it).
+
+### 17.1 Version landscape (npm, 2026-10-17)
+
+- `@deepseek-ai/dsh` dist-tags: `latest` = **0.2.0-rc.2**, `alpha` = **0.2.1-alpha.5**,
+  `next` = **0.2.1-rc.2**. **No non-prerelease 0.2.x exists yet** — the "full release"
+  the fork should target has not shipped.
+- Mobile packages (`dsh-attachment-local`, `dsh-client-modules`, …) are published
+  **in lockstep with every train version** (0.1.0-rc.2…rc.8, 0.2.0-rc.1/2,
+  0.2.1-alpha.1…5, 0.2.1-rc.1/2) — but their `latest` dist-tag is parked at
+  `0.0.1-rc.1`, so a plain `@latest` install gets an OLD line. Pin exact versions.
+- **0.2.1-rc.2 exact-pins every `dsh-*` dependency (no carets)** — the transitive
+  caret drift that produced the rc.8-era skew (facade/imageLimits bugs) disappears
+  on that train. Only cordis-ecosystem deps stay ranged (`~4.0.5`, `~1.0.10`, …).
+- Third-party (NOT official, NOT ours): npm has `dsh-mobile` (saya-ch) and
+  `dsh-mobile-plugin` (wnluo, self-described "0.2.0-rc.2 compatible") — distinct
+  from the Ayrlin-Renata fork.
+
+### 17.2 Fork patch inventory vs 0.2.1-rc.2 (grep-verified via `npm pack`)
+
+| Fork patch (12 rc.7 tarballs) | Status in 0.2.1-rc.2 | Upgrade action |
+|---|---|---|
+| `maxImageDimension` (sylvia's, Phase 1) | **upstream** (3 hits) | retire |
+| lazy sharp — `resolveSharp` / `IMAGE_PROCESSING_UNAVAILABLE` | **absent** (0 hits) | **re-apply in fork rebuild** |
+| FUSE fallback — `isHardLinkUnsupported` / `COPYFILE_EXCL` | **absent** (0 hits) | **re-apply** |
+| client-modules `cache-control: no-cache` | **absent** — stock `max-age=31536000` is back | **re-apply** (dev-staleness protection) |
+| client-modules `__ModuleLoader__` facade | present (8 hits) | nothing to do |
+
+Conclusion: the fork is **not** obsolete — three Android-critical patches never
+landed upstream and must survive any rebuild. (An earlier note claiming these were
+"already upstreamed" was **wrong**.)
+
+### 17.3 Sylvia seam audit on 0.2.1 (all verified)
+
+- **Stable:** `webServer.tapIndex` (CSS seam) ✓; `dsh-mcp-client` stdio config
+  (`serverName` etc.) ✓ — now exact-pinned to the harness version;
+  `agent.followup/inject/cancel` contract ✓ — **moved** to `dsh-agent-loop` +
+  `dsh-api-session-controller` (live proof: `@gorban/dsh-job-stop`, in our PC
+  profile, uses `followup` at `src/index.ts:312` and runs on 0.2.1);
+  `cordis.patch.yml` + profile-`package.json` plugin model ✓ (PC profile intact);
+  community plugins load ✓.
+- **Retire on upgrade:** the `cordis-plugin-hmr@1.0.17` pin — the package was
+  replaced by `@deepseek-ai/dsh-hmr` (exact-pinned); `registerConfig` and
+  `watchUserPatches` exist in **no** 0.2.1 package → the profile-boot fiber-settle
+  patch (`/* sylvia:await-hmr-settle */`) has nothing to patch and dies with its
+  marker-guard (harmless no-op). Boot chunk name for alpha.5:
+  `profile-boot-C14i-8IN.js` (content-hashed — the installer's content-marker
+  selection adapts automatically).
+- **Re-verify per release:** HMR/user-patch behavior, the rc.8-prune logic (exact
+  pins should make it a no-op), and `dsh-client-modules`↔frontend alignment (stays
+  as a drift guard).
+
+### 17.4 Recommendation
+
+1. **Do not chase alpha.** Wait until a non-prerelease 0.2.x becomes `latest`
+   (as of this writing only `0.2.0-rc.2` / `0.2.1-rc.2` exist).
+2. On release: **one fork rebuild cycle** — rebuild the 12 tarballs at the exact
+   release version, re-applying the three surviving patches (§17.2; drop the
+   maxImageDimension one), bump the fork `install.sh` pins (rc.6 → release), and
+   add sources + a build script to the fork (§16) so the next port is one commit.
+3. Re-run sylvia's `install.sh` against it: prune/hmr-pin/settle self-retire via
+   their guards, cm-align stays as a drift guard, the module system / termux:boot /
+   launchers / MCP registration are version-agnostic and untouched.
+4. Upstream reports still worth filing (§16.3 Phase 4), adjusted: hmr pin is
+   obsolete as a report (package replaced); the `latest`-tag-parked-at-`0.0.1-rc.1`
+   oddity and the immutable-cache default are worth noting upstream.
