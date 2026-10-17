@@ -1,0 +1,18 @@
+{
+  "id": "9router",
+  "name": "9Router",
+  "behavior": "manual",
+  "frontend": "http://127.0.0.1:20128",
+  "settingsSchema": [
+    { "key": "port", "type": "port", "label": "Port", "default": 20128 },
+    { "key": "bind", "type": "ip", "label": "Bind address", "default": "127.0.0.1" },
+    { "key": "initialPassword", "type": "string", "label": "Dashboard password", "default": "sylvia" }
+  ],
+  "backup": { "enabled": false },
+  "scripts": {
+    "on": "scripts/on.sh",
+    "off": "scripts/off.sh",
+    "status": "scripts/status.sh",
+    "settingsEdit": "scripts/settings-edit.sh"
+  }
+}

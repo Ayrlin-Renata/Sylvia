@@ -79,29 +79,62 @@ re-run the same command.
    directory-picker timeout + retry, plugin-bundle caching) — **one npm install per
    package**, because npm's multi-spec install crashes its dependency-tree builder on
    this set (a package with 8 peer deps; `--legacy-peer-deps` retries just that one).
+   It then applies the fixes the harness needs to boot on Termux: prunes newer npm
+   copies of those same fork packages that get shadowed *inside* the CLI's tree,
+   pins `cordis-plugin-hmr` to `1.0.17` (1.0.18+ dropped an API DSH's boot still
+   calls), waits for the HMR service to settle before patch-watching, and symlinks
+   the `sylvia-bridge` plugin's `@deepseek-ai/*` deps. It also aligns
+   `dsh-client-modules` to the installed web-frontend version (the frontend
+   isn't one of the fork's tarballs, so npm resolves it to a newer rc than the
+   fork pins — only rc.8+ client-modules inject the `window.__ModuleLoader__`
+   facade that the rc.8+ frontend requires at boot), and it patches the fork's
+   frozen `dsh-attachment-local` (rc.7) bytes with the `maxImageDimension` key
+   that rc.8's `session.history` image-limits projection requires — in place,
+   preserving the fork's Android-critical changes (lazy sharp loading for
+   Termux, the FUSE hard-link fallback). All of it re-applies on
+   re-run.
 3. **`sylvia-mcp`** — the custom MCP server, source + `npm install` + a stdio handshake
    smoke-test that confirms all 9 tools register.
 4. **`sylvia-daemon`** — the control daemon (loopback HTTP API on `:3090`): network-state
    detection, netgate (managed-traffic hold/resume), resource registry + policy, LAN
    discovery, module manager, and the web control panel.
 5. **`sylvia-bridge`** — the DSH plugin that monitors network state and pauses/resumes
-   the harness on metered connections (configurable).
+   the harness on metered connections (configurable). It also provides the **custom
+CSS seam**: `~/.sylvia/mobile.css` is inlined into every served index page, so mobile
+layout fixes (the oversized settings dialog is the known one) are edit → browser
+refresh → live, with no harness restart. The installer seeds a commented starter file
+once and never overwrites your edits.
 6. **MCP registration** — appends the server entries to
-   `~/.dsh/profiles/web/cordis.patch.yml`. This is **non-destructive**: it only appends,
-   never rewrites, and skips any entry already present by `id`.
+   `~/.dsh/profiles/web/cordis.patch.yml`, each as an `insert:` row (a bare `- id:`
+   row is silently skipped by DSH's patch loader). This is **non-destructive**: it
+   only appends, never rewrites, migrates any legacy bare rows in place, and skips
+   any entry already present by `id`.
 7. **mitmproxy + `mitmproxy-mcp`** — installs the mitmproxy CLI and the `mitmproxy-mcp`
    MCP server. **If you provide a prebuilt wheelhouse** (see §3.1), both install as
    persistent uv tools, fully offline, in seconds. Otherwise PyPI has **no Android
    wheels** for mitmproxy's native deps (`bcrypt`, `cryptography`, `cffi`, ...), so the
    installer builds them from source: it adds the Rust/C toolchain (`rust`, `binutils`,
    `clang`, `make`, `pkg-config`, `openssl`, `cmake` — only what's missing) just for this
-   step. (`cmake` matters: without it, `argon2-cffi-bindings` ≥26 tries to download and
-   compile CMake from source — see [upstream issue #142](https://github.com/hynek/argon2-cffi-bindings/issues/142).)
-   The first build can take several minutes; later runs skip it entirely. The installer
-   also checks free disk first, reclaims package caches when low, and retries once on
-   `ENOSPC` instead of dying mid-build.
-8. **Local module definitions** — SillyTavern and mDNS module skeletons under
-   `~/.sylvia/modules/`, manageable from the control panel.
+   step, plus `pybind11` + `libre2` (google-re2 compiles against the system headers),
+   and pins `argon2-cffi-bindings<26` (v26+ switched to scikit-build-core, whose Android
+   path assumes an NDK sysroot Termux doesn't have — see
+   [upstream issue #142](https://github.com/hynek/argon2-cffi-bindings/issues/142)).
+   The first build can take several minutes; later runs skip it entirely (the warm
+   build's log is `~/.sylvia/.mitmproxy-mcp-warm.log`). The installer also checks free
+   disk first, reclaims package caches when low, and retries once on `ENOSPC` instead of
+   dying mid-build. On **x86_64** (the emulator) `curl_cffi` has no Android wheel, so it
+   gets a one-off patched build from its sdist; after everything is built, `patchelf`
+   fixes two extension load quirks (`mitmproxy_rs` needs an explicit `libpython3.14.so`
+   entry — Termux's python exe exports no C API — and `curl_cffi` needs Termux's
+   `libc++_shared.so` in place of the Android system `libc++.so`). On arm64 phones none
+   of that x86_64 path runs; native wheels resolve from PyPI as normal.
+8. **Local modules** — seeds the shipped module definitions from `modules/` into
+   `~/.sylvia/modules/` (currently the **9router** example — a full lifecycle
+   workout of the module system: status / on / off / settings through the control
+   panel, plus its own README in the module dir). Existing module directories are
+   never overwritten — after seeding they are user-owned (settings, logs, and any
+   installed service live inside them). The daemon discovers modules at boot, so
+   restart the harness after adding new ones.
 
 Everything lands under `~/.sylvia` (override with `SYLVIA_HOME`).
 
@@ -187,8 +220,28 @@ command -v nmap
 command -v ip
 command -v python
 
-# mitmproxy CLI should be on PATH (~/.local/bin):
-command -v mitmdump
+# mitmproxy CLI should be on PATH (~/.local/bin), and this smoke-tests the
+# patchelf'd mitmproxy_rs extension (it fails with a dlopen symbol error if the
+# fix is missing):
+command -v mitmdump && mitmdump --version
+
+# The control daemon should answer:
+curl -s http://127.0.0.1:3090/api/health   # (needs start-sylvia.sh running)
+
+# Seeded modules should be listed (9router once installed):
+curl -s http://127.0.0.1:3090/api/modules
+
+# Module lifecycle smoke test (first 9router start also npm-installs the
+# package, so expect "phase":"installing" for a couple of minutes on the
+# very first `on` only — later starts are near-instant):
+curl -s -X POST http://127.0.0.1:3090/api/modules/9router/on
+curl -s -X POST http://127.0.0.1:3090/api/modules/9router/status   # "http":true
+curl -s -o /dev/null -w '%{http_code}\n' -L http://127.0.0.1:20128/ # 200 dashboard
+curl -s -X POST http://127.0.0.1:3090/api/modules/9router/off
+
+# The custom CSS seam should be injecting the style tag (also needs the
+# harness running; -> 1). Edit ~/.sylvia/mobile.css and re-run to see it live:
+curl -s http://127.0.0.1:3080/ | grep -c sylvia-mobile-css
 
 # The 9 Sylvia tools should register over the MCP stdio handshake (this is what
 # install.sh already smoke-tested):
@@ -212,8 +265,11 @@ Everything the installer generated lives in `~/.sylvia`:
 ```
 
 `start-sylvia.sh` starts `sylvia-daemon` in the background (if not already running) and
-then the harness on `127.0.0.1:<SYLVIA_WEB_PORT>`. To survive the terminal closing, run
-it inside `tmux`:
+then the harness on `127.0.0.1:<SYLVIA_WEB_PORT>`. The launcher runs DSH with
+`--no-open` (DSH's own browser-open fires before the plugin tree finishes loading) and
+instead polls the port, so your browser opens only once the server actually answers —
+if it opens and then errors, check the terminal output for the failing plugin. To
+survive the terminal closing, run it inside `tmux`:
 
 ```sh
 tmux new -s sylvia
@@ -364,6 +420,11 @@ with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those
 | Bridge plugin not loading | Check `grep -n "sylvia-bridge" ~/.dsh/profiles/web/cordis.patch.yml`. Verify the symlink: `ls -la ~/.dsh/profiles/web/node_modules/sylvia-bridge`. |
 | Tasker reload intent not firing | Verify the broadcast action string against your Tasker build in the emulator Logcat. |
 | Discovery scan refuses | It refuses on metered/offline networks. Check network state via `mcp__sylvia__network_state`. |
+| Harness dies with `plugin tree failed to load` or `user patch-layer watching requires the Cordis HMR service` | Upstream npm drift inside the CLI's tree — re-run `install.sh`. The prune, the `cordis-plugin-hmr@1.0.17` pin, and the boot patch are all marker-guarded, so they re-apply cleanly. |
+| Browser shows `Failed to load plugins / web boot: window.__ModuleLoader__ bootstrap facade is missing` | Version skew between the npm-resolved web frontend (rc.8+) and the fork-pinned `dsh-client-modules` (rc.7, predates the facade). Re-run `install.sh` — it aligns `dsh-client-modules` to the frontend version — then hard-refresh the page (Ctrl+F5). |
+| Chat fails with `Failed to load history … maxImageDimension … expected number, received undefined` | The fork's `dsh-attachment-local` (rc.7) predates the rc.8 image-limits projection contract. Re-run `install.sh` — it hash-guard-patches the frozen package bytes with the missing key (keeping the fork's Android fixes) — then reload the session. |
+| `EADDRINUSE … 3080` at launch | A previous harness instance is still running — kill the stale `node … bin.js web` process and relaunch. |
+| mitmproxy tools missing on first launch | The first `uvx` build is slow — check `~/.sylvia/.mitmproxy-mcp-warm.log`, then re-run `install.sh` (warm build and `patchelf` fixes are idempotent). Reload the MCP servers from the UI if they still don't appear. |
 
 ---
 

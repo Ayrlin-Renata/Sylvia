@@ -24,6 +24,9 @@ export const DEFAULT_CONFIG = {
   onUnknown: 'allow',
   daemonUrl: 'http://127.0.0.1:3090',
   stateFile: '~/.sylvia/netstate.json',
+  // Custom CSS inlined into every index render (see lib/index.js). Absent or
+  // empty file = no injection; edits apply on the next browser refresh.
+  cssFile: '~/.sylvia/mobile.css',
   pollIntervalMs: 10000,
   staleAfterMs: 60000,
 };

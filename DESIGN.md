@@ -144,6 +144,10 @@ Not a one-purpose "netguard": config-driven **context injection + observation + 
    `GET /resolve` → inject context (§6.2 Path B) or refuse-with-reason per policy.
 4. **Ask-dialogues** — render DSH approval prompts when policy = `ask` (incl. deny → inject "user declined to use X"
    so the agent doesn't retry blindly).
+5. **Mobile CSS seam** — DSH ships no user-stylesheet hook, so the bridge registers `webServer.tapIndex` (the
+   ui-theme plugin's own precedent) and inlines `cfg.cssFile` (`~/.sylvia/mobile.css`) into every index render.
+   Read-per-render → edit + browser refresh = live styling iteration, no restart; absent/empty file = untouched
+   page. Starter seeded by install.sh (`assets/mobile.css`), never overwritten.
 
 ---
 
@@ -429,6 +433,7 @@ Rationale: structured JSON over a DB (matches the existing state-management appr
 | installer footprint removal | separate **uninstall.sh** (opt-in `--remove-dsh` / `--remove-packages`, `--dry-run`) | dev/emulator iteration needs a clean slate; must never touch non-Sylvia DSH profiles or generic Termux packages by default |
 | mitmproxy distribution | **per-device prebuilt wheelhouse** (`build-wheelhouse.sh` → tarball; installer `--find-links --no-index`), source build remains the universal fallback; wheelhouse also registers mitmproxy-mcp as a **persistent uv tool** instead of `uvx` | the source build is the slowest/most fragile step and PyPI has no Android wheels; native wheels are per-(arch, CPython ABI) so no universal binary exists — emulator is x86_64, phone is arm64, and a Termux python upgrade invalidates the ABI (hence manifest arch+python validation with silent fallback); persistent tool removes all first-launch dependency resolution |
 | DSH CLI + rc.7 packages install | **one `npm install -g` per package** (replicate the fork's 13 specs ourselves), not the fork's single 13-package call | under npm 11 the one-big multi-spec command deterministically crashes arborist's ideal-tree builder (`Cannot read properties of null (reading 'children')`), even on a fresh tree; a single-spec-per-invocation install never enters that code path. Same 13 specs → identical result |
+| patch home | **fork tarballs** for source fixes of the 12 shipped packages; **sylvia** for npm/install machinery; **upstream** for DSH bugs | the fork's product is its tarballs (repo carries no sources); sylvia alone performs npm installs (§14 arborist decision), so fork-installer code never runs under sylvia |
 
 ## 15. Open questions / verify in emulator
 
@@ -440,3 +445,81 @@ Rationale: structured JSON over a DB (matches the existing state-management appr
   daemon — ship only reviewed modules, treat user-added ones as trusted-local).
 - Device identity promotion thresholds (sightings/time for provisional → corroborated).
 - Off-LAN reachability for §9 (tunnel choice) — deferred.
+
+## 16. Fork migration plan (sylvia patches → Deepseek-harness-mobile)
+
+Raised as a queued follow-up concern: move the *reasonable* fixes out of Sylvia's
+installer and into `Ayrlin-Renata/Deepseek-harness-mobile` (local clone:
+`reference/Deepseek-harness-mobile`). Analysis done; execution awaits sign-off.
+
+### 16.1 Ground truth
+
+- The fork ships **only** `install/` = 12 built `deepseek-ai-dsh-*-0.1.0-rc.7.tgz`
+  + a 79-line `install.sh` (single 13-spec `npm install -g` + version verifier).
+  **No package sources, no build script** → any rebuild = unpack → edit → repack,
+  and the repo should gain a build script + patch sources for reproducibility.
+- Verified: the installed `attachment-local/lib/index.js` bytes are exactly the
+  tarball's `package/lib/index.js` (md5 `7571b9b5…` on both) → rebuild path valid.
+- Sylvia does **not** run the fork's installer (§14 arborist decision): module 4
+  replicates the 13 specs one npm call each. Consequence: fixes moved into the
+  fork's `install.sh` do **not** execute under Sylvia — they only serve
+  standalone fork users. Fork-installer changes and sylvia's guards must coexist.
+
+### 16.2 Classification — what is "reasonable" to move
+
+| Sylvia-side fix | Patches | Home | Why |
+|---|---|---|---|
+| `maxImageDimension` (`_patch_attachment_local_image_dimension` + `patches/attachment-local-rc7-index.js`) | source of a **fork-shipped package** | **FORK tarball** | it is a modified version of the fork's own product; a tarball carries it atomically and npm-visibly; sylvia's hash-guard + repo copy then retire |
+| client-modules rc.8 (`_align_client_modules_to_fe`) | fork ships rc.7 client-modules while npm resolves the frontend to rc.8+ | **FORK tarball (partial)** | fork should ship stock rc.8 client-modules — its only patch (`cache-control: no-cache`) is already upstream in rc.8. The dynamic align **stays in sylvia as a drift guard**: the frontend version moves whenever the registry does |
+| nested rc.8 prune (`_prune_nested_fork_copies`) | npm resolution tree (CLI's nested `node_modules`) | **stays sylvia** (optional mirror) | not a tarball — npm machinery; sylvia is the layer that runs npm |
+| `cordis-plugin-hmr@1.0.17` pin | npm transitive dep drift | **stays sylvia** (optional mirror) | same; upstream bug too (1.0.18 removed `registerConfig` while `dsh-app-boot` still calls it) |
+| profile-boot HMR-settle (`_patch_profile_boot_hmr_settle`) | bundled chunk inside the npm-installed CLI — not one of the 12 | **stays sylvia** (optional mirror) | not a fork product file; content-hash-dependent; upstream race |
+| cordis insert-shape migration, bridge dep symlinks, launchers/env, uv/mitm/patchelf, MCP registration | sylvia's own deployment config | **stays sylvia** | not DSH packages |
+
+Upstream candidates (report; own neither layer): cordis-plugin-hmr 1.0.18 semver
+break; profile-boot `watchUserPatches`-before-HMR-settle race; rc.8's cross-package
+`imageLimits` projection contract (apiproxy validates a sibling package's output
+with no version handshake).
+
+### 16.3 Phases — independently shippable, device-verified between each
+
+**Phase 1 — attachment-local tarball (highest value; verifiers unaffected)**
+1. Unpack `install/deepseek-ai-dsh-attachment-local-0.1.0-rc.7.tgz`, replace
+   `package/lib/index.js` with the repo's already-built patched file, repack,
+   commit in the fork clone (branch `sylvia-sync`).
+2. **Atomically** relax sylvia's helper: today it dies on unknown bytes — after the
+   swap, fresh installs legitimately see new-tarball bytes. New order:
+   `grep -q maxImageDimension` → skip (covers already-patched devices AND the new
+   tarball); else hash == `7571b9b5…` → patch (old fork); else die. Land fork
+   tarball + helper change together or a fresh device fails closed.
+3. Device verify: reinstall the single tgz, run installer (expect the skip branch),
+   restart, replay `POST /api/session.history` → `result.ok:true` with
+   `imageLimits.maxImageDimension`. Version stays `0.1.0-rc.7` → fork verifier and
+   sylvia's all-or-nothing canary (§14) both pass unchanged.
+
+**Phase 2 — client-modules rc.8 tarball swap**
+1. Replace the fork tarball with a stock rc.8 pack (known: fork's only patch is
+   upstream there; re-confirm zero other diffs).
+2. Fork `install.sh`: filename → `…-client-modules-0.1.0-rc.8.tgz`; verifier
+   accepts `0.1.0-rc.8` **for that package only**.
+3. Sylvia module-4 canary gets the same rc.8 exception; keep
+   `_align_client_modules_to_fe` as the drift guard (no-op when matched).
+4. Device verify: boot green, facade script tags in served HTML, history RPC.
+
+**Phase 3 — optional mirror into the fork's installer (standalone-fork users)**
+- Transplant prune + hmr-pin + profile-boot-settle into `install/install.sh` so
+  fork-only users get a bootable harness (today they hit the same crashes Sylvia
+  fixes). Sylvia keeps its own guarded copies — all are marker/content-guarded, so
+  whichever runs first wins and the other no-ops; duplication is deliberate because
+  sylvia must not depend on fork-installer execution (§14).
+- Verify with a standalone fork install in a fresh emulator Termux.
+
+**Phase 4 — upstream reports** (cordis-plugin-hmr, profile-boot race, imageLimits contract).
+
+### 16.4 Cautions
+
+- `reference/` clones are dev-only (never shipped); changes stay local until pushed
+  — publishing fork updates needs the user's GitHub auth.
+- Sylvia's tree has **uncommitted** changes (`README.md`, `install.sh`,
+  `sylvia-bridge/lib/index.js`, untracked `patches/`) — commit for a clean
+  rollback point before starting Phase 1.

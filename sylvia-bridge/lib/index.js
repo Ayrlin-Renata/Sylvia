@@ -9,6 +9,9 @@
 // Side effects (cancel/inject) stay thin here; all gate semantics live in
 // lib/core.js so they can be unit-tested without a running harness.
 
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import z from '@deepseek-ai/schemastery';
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm';
 import { createBridgeCore, DEFAULT_CONFIG } from './core.js';
@@ -20,13 +23,16 @@ export const inject = ['agents'];
 
 export const Config = z.object({
   enabled: z.boolean().default(DEFAULT_CONFIG.enabled),
-  onMetered: z.enum(['pause', 'allow']).default(DEFAULT_CONFIG.onMetered),
-  pauseMode: z.enum(['finish-stream', 'immediate']).default(DEFAULT_CONFIG.pauseMode),
+  // Termux's schemastery (3.18.5) ships no z.enum — build enums from
+  // z.union([z.const(...)]) instead (same schema shape upstream).
+  onMetered: z.union([z.const('pause'), z.const('allow')]).default(DEFAULT_CONFIG.onMetered),
+  pauseMode: z.union([z.const('finish-stream'), z.const('immediate')]).default(DEFAULT_CONFIG.pauseMode),
   resumeOnReconnect: z.boolean().default(DEFAULT_CONFIG.resumeOnReconnect),
   notifyPausedWork: z.boolean().default(DEFAULT_CONFIG.notifyPausedWork),
-  onUnknown: z.enum(['allow', 'pause']).default(DEFAULT_CONFIG.onUnknown),
+  onUnknown: z.union([z.const('allow'), z.const('pause')]).default(DEFAULT_CONFIG.onUnknown),
   daemonUrl: z.string().default(DEFAULT_CONFIG.daemonUrl),
   stateFile: z.string().default(DEFAULT_CONFIG.stateFile),
+  cssFile: z.string().default(DEFAULT_CONFIG.cssFile),
   pollIntervalMs: z.number().min(1000).default(DEFAULT_CONFIG.pollIntervalMs),
   staleAfterMs: z.number().min(5000).default(DEFAULT_CONFIG.staleAfterMs),
 });
@@ -85,6 +91,39 @@ export function apply(ctx, config) {
     if (typeof timer.unref === 'function') timer.unref();
     return () => clearInterval(timer);
   }, 'sylvia-bridge:poll');
+
+  // Mobile custom-CSS seam. DSH ships no user-stylesheet hook, so we mirror the
+  // ui-theme plugin's registration: tap the host's index transform and inline
+  // cfg.cssFile as a <style> element. The file is read on EVERY index render,
+  // so edits apply on the next browser refresh — no restart, no rebuild.
+  // Absent/empty file → page untouched (the default state before first use).
+  ctx.inject(['webServer'], (httpCtx) => {
+    httpCtx.effect(() => {
+      let announced = false;
+      const disposer = httpCtx.webServer.tapIndex((html) => {
+        let css = '';
+        try {
+          const path = cfg.cssFile.startsWith('~')
+            ? join(homedir(), cfg.cssFile.slice(1))
+            : cfg.cssFile;
+          css = readFileSync(path, 'utf8');
+        } catch {
+          return html; // no stylesheet yet (or unreadable) — leave the page alone
+        }
+        if (!css.trim()) return html;
+        if (!announced) {
+          announced = true;
+          ctx.logger?.info?.(`[sylvia-bridge] mobile css active (${cfg.cssFile})`);
+        }
+        // A literal "</style" inside the file would end the element early.
+        const safe = css.replace(/<\/style/gi, '<\\/style');
+        const tag = `<style id="sylvia-mobile-css">\n${safe}\n</style>`;
+        if (html.includes('</head>')) return html.replace('</head>', `${tag}\n</head>`);
+        return `${html}\n${tag}`;
+      });
+      return disposer;
+    }, 'sylvia-bridge:mobile-css');
+  });
 
   // Expose for debugging / future control-panel probes.
   ctx.provide?.('sylviaBridge', core.getState);

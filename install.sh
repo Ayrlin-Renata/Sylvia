@@ -209,6 +209,196 @@ module_dsh_cli() {
   ok "DSH CLI installed (standalone upstream)"
 }
 
+# npm resolves the CLI's ^0.1.0-rc.6 dependency ranges to the registry's NEWEST
+# prerelease (rc.8+ today) and NESTS those copies inside dsh/node_modules/
+# @deepseek-ai, where Node's resolver prefers them over the fork's patched
+# top-level rc.7 tarballs. Upstream rc.8 eagerly imports sharp/node-pty → hard
+# crash on Termux ("plugin tree failed to load"). The fork's own verifier only
+# checks TOP-LEVEL versions, so it cannot see this shadowing — prune the nested
+# copies so the patched packages win resolution.
+_prune_nested_fork_copies() {
+  local gmp="$1"; shift
+  local nest="$gmp/dsh/node_modules/@deepseek-ai" sib pruned=0
+  [ -d "$nest" ] || return 0
+  for sib in "$@"; do
+    if [ -e "$nest/$sib" ]; then
+      rm -rf "$nest/$sib"
+      pruned=1
+    fi
+  done
+  if [ "$pruned" -eq 1 ]; then
+    ok "pruned nested upstream copies of the fork packages (they shadowed the rc.7 patches)"
+  fi
+  return 0
+}
+
+# cordis-plugin-hmr 1.0.18+ REMOVED hmr.registerConfig() while dsh-app-boot
+# still calls it (dsh-app-boot/lib/index.js:767). The CLI declares the peer
+# "^1.0.16", so npm resolves the NEWEST publish (1.0.20) and boot dies with
+# "hmr.registerConfig is not a function" / "user patch-layer watching requires
+# the Cordis HMR service". 1.0.17 is the last version that has registerConfig
+# (verified against a known-working PC install). Pin the nested copy after
+# every install/repair of the CLI tree.
+_pin_hmr_17() {
+  local gmp="$1"
+  local hmr="$gmp/dsh/node_modules/@deepseek-ai/cordis-plugin-hmr"
+  local ver=""
+  [ -f "$hmr/package.json" ] && ver="$(node -p "require(process.argv[1]).version" "$hmr/package.json" 2>/dev/null || true)"
+  if [ "$ver" = "1.0.17" ]; then
+    skip "cordis-plugin-hmr already pinned to 1.0.17"
+    return 0
+  fi
+  note "pinning cordis-plugin-hmr to 1.0.17 (found ${ver:-missing}; 1.0.18+ removed registerConfig)"
+  local tmp tgz pkg
+  tmp="$(mktemp -d)" || die "mktemp -d failed"
+  if ! (cd "$tmp" && npm pack "@deepseek-ai/cordis-plugin-hmr@1.0.17" --silent >/dev/null 2>&1); then
+    rm -rf "$tmp"
+    die "npm pack @deepseek-ai/cordis-plugin-hmr@1.0.17 failed (network?) — without the pin boot dies on 'hmr.registerConfig is not a function'"
+  fi
+  tgz="$(printf '%s\n' "$tmp"/*.tgz)"
+  if [ ! -f "$tgz" ]; then rm -rf "$tmp"; die "npm pack produced no tarball for cordis-plugin-hmr@1.0.17"; fi
+  pkg="$tmp/pkg"
+  mkdir -p "$pkg"
+  tar -xzf "$tgz" -C "$pkg" --strip-components=1 || { rm -rf "$tmp"; die "could not extract $tgz"; }
+  [ "$(node -p "require(process.argv[1]).version" "$pkg/package.json" 2>/dev/null)" = "1.0.17" ] \
+    || { rm -rf "$tmp"; die "extracted cordis-plugin-hmr is not 1.0.17"; }
+  grep -q "registerConfig" "$pkg/lib/index.js" \
+    || { rm -rf "$tmp"; die "extracted cordis-plugin-hmr 1.0.17 lacks registerConfig"; }
+  rm -rf "$hmr"
+  mv "$pkg" "$hmr"
+  rm -rf "$tmp"
+  ok "cordis-plugin-hmr pinned to 1.0.17 (registerConfig present)"
+}
+
+# The web frontend is NOT one of the fork's 12 tarballs, so npm resolves it to
+# the registry's newest prerelease (rc.8+) while the fork pins client-modules to
+# its local rc.7 tarball. rc.8's injectBootManifest injects the
+# window.__ModuleLoader__ facade IIFE + parser-preload <script> tags that the
+# rc.8 frontend REQUIRES ("web boot: window.__ModuleLoader__ bootstrap facade
+# is missing"); rc.7's tap injects only the __DSH_BOOT__ graph, so the UI dies
+# on load. The fork's own patch set predates the facade contract — and upstream
+# rc.8 already absorbed the fork's one CM change (cache-control: no-cache).
+# Align client-modules to whatever frontend version is actually installed
+# (paired publishing: they share the version). Idempotent; fail-fast.
+_align_client_modules_to_fe() {
+  local gmp="$1"
+  local fe="" fe_pkg cm_ver fe_ver
+  for fe_pkg in \
+    "$gmp/dsh/node_modules/@deepseek-ai/dsh-web-frontend/package.json" \
+    "$gmp/dsh-web-frontend/package.json"; do
+    [ -f "$fe_pkg" ] && { fe="$fe_pkg"; break; }
+  done
+  [ -n "$fe" ] || die "dsh-web-frontend not found under $gmp (nested or top-level) — cannot align client-modules to the frontend"
+  fe_ver="$(node -p "require(process.argv[1]).version" "$fe" 2>/dev/null)" \
+    || die "could not read frontend version from $fe"
+  [ -n "$fe_ver" ] || die "frontend version empty in $fe"
+  cm_ver=""
+  [ -f "$gmp/dsh-client-modules/package.json" ] \
+    && cm_ver="$(node -p "require(process.argv[1]).version" "$gmp/dsh-client-modules/package.json" 2>/dev/null)"
+  if [ "$cm_ver" = "$fe_ver" ]; then
+    skip "dsh-client-modules already matches the frontend ($fe_ver)"
+    return 0
+  fi
+  note "aligning dsh-client-modules ${cm_ver:-missing} -> $fe_ver (frontend facade contract)"
+  npm install --global "@deepseek-ai/dsh-client-modules@$fe_ver" --no-audit --no-fund >/dev/null 2>&1 \
+    || die "npm install -g @deepseek-ai/dsh-client-modules@$fe_ver failed (network?) — without it the UI dies with 'window.__ModuleLoader__ bootstrap facade is missing'"
+  cm_ver="$(node -p "require(process.argv[1]).version" "$gmp/dsh-client-modules/package.json" 2>/dev/null || true)"
+  [ "$cm_ver" = "$fe_ver" ] \
+    || die "dsh-client-modules is $cm_ver after install, expected $fe_ver"
+  grep -q 'mode:"queue"' "$gmp/dsh-client-modules/lib/index.js" \
+    || die "dsh-client-modules@$fe_ver lacks the __ModuleLoader__ facade injection (injectBootManifest)"
+  ok "dsh-client-modules aligned to frontend $fe_ver (facade injection present)"
+}
+
+# The fork's dsh-attachment-local (frozen rc.7 tarball bytes) predates rc.8's
+# imageLimits contract: dsh-host-apiproxy validates the session.history
+# `imageLimits` projection with a schema REQUIRING maxImageDimension, so the
+# missing field kills chat history with "Failed to load history ...
+# maxImageDimension". Upgrading the package is NOT an option: the fork's rc.7
+# bytes carry Android-critical changes upstream lacks (lazy sharp loading —
+# sharp ships no Termux binary — and the FUSE hard-link fallback). Patch the
+# frozen baseline in place with just the added key (mirrors how the fork itself
+# ships modified files at the same version). Hash-guarded both ways: fork
+# baseline -> copy the repo's known-patched build over it; already patched ->
+# skip; anything else -> die (never clobber unknown bytes). The baseline never
+# changes (it is the fork's committed tarball), so the hashes are stable.
+_patch_attachment_local_image_dimension() {
+  local gmp="$1"
+  local target="$gmp/dsh-attachment-local/lib/index.js"
+  [ -f "$target" ] || die "dsh-attachment-local missing ($target) — run the mobile-patch module first"
+  local md5_of='const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("md5").update(f.readFileSync(process.argv[1])).digest("hex"))'
+  local base=7571b9b552b7e642334a19aa00cd812f patched=4226721c65c4f3b25baa4e2d9661998f now
+  now="$(node -e "$md5_of" "$target")" || die "could not hash $target"
+  case "$now" in
+    "$patched") skip "attachment-local image-dimension patch already applied"; return 0 ;;
+    "$base") ;;
+    *) die "attachment-local lib/index.js has unexpected bytes ($now — expected baseline $base or patched $patched); refusing to overwrite" ;;
+  esac
+  local src="$SCRIPT_DIR/patches/attachment-local-rc7-index.js"
+  if [ ! -f "$src" ]; then
+    local repo_dir="$SYLVIA_HOME/repo"
+    if [ ! -f "$repo_dir/patches/attachment-local-rc7-index.js" ]; then
+      ensure_dir "$SYLVIA_HOME"
+      note "cloning Sylvia repo for patches/attachment-local-rc7-index.js: $SYLVIA_REPO_URL"
+      rm -rf "$repo_dir"
+      git clone --depth 1 "$SYLVIA_REPO_URL" "$repo_dir" || die "git clone of Sylvia repo failed ($SYLVIA_REPO_URL)"
+    fi
+    src="$repo_dir/patches/attachment-local-rc7-index.js"
+  fi
+  local src_md5
+  src_md5="$(node -e "$md5_of" "$src")" || die "could not hash $src"
+  [ "$src_md5" = "$patched" ] || die "patch source has unexpected bytes ($src_md5, want $patched) — $src"
+  cp "$src" "$target" || die "could not write $target"
+  grep -q "maxImageDimension" "$target" || die "patched attachment-local lacks maxImageDimension after copy"
+  ok "attachment-local patched with imageLimits.maxImageDimension (rc.8 projection contract)"
+}
+
+# profile-boot does `await ctx.loader.create({name: "...cordis-plugin-hmr"})`
+# and then immediately calls watchUserPatches(), but the hmr SERVICE only
+# registers after its fiber settles: loader.create() returns while the entry
+# fiber is still state 1, ctx.get("hmr") stays undefined until state 2, so
+# watchUserPatches throws "user patch-layer watching requires the Cordis HMR
+# service" (reliably, on Termux). Insert an explicit fiber-settle wait between
+# the create call and watchUserPatches. Marker-guarded → idempotent.
+_patch_profile_boot_hmr_settle() {
+  local gmp="$1"
+  # lib/ holds BOTH a stable stub (profile-boot-<hash>.js re-exporting
+  # runProfile) and the content-hashed chunk that actually contains the boot
+  # code — select by content, never alphabetically (the stub sorts first and
+  # has no anchor). Patch EVERY anchor-bearing chunk: a later CLI reinstall
+  # can leave both a pristine and an already-patched chunk behind.
+  local f found=0 patched=0 marked=0
+  for f in "$gmp"/dsh/lib/profile-boot-*.js; do
+    [ -f "$f" ] || break
+    grep -q "cordis-plugin-hmr" "$f" || continue   # stubs reference the chunk instead
+    found=1
+    if grep -q "sylvia:await-hmr-settle" "$f"; then
+      marked=1
+      continue
+    fi
+    [ -f "$f.sylviabak" ] || cp "$f" "$f.sylviabak" || warn "could not back up $f"
+    node -e '
+      const fs = require("fs");
+      const f = process.argv[1];
+      let s = fs.readFileSync(f, "utf8");
+      const re = /await ctx\.loader\.create\(\{\s*name:\s*"@deepseek-ai\/cordis-plugin-hmr",\s*config:\s*\{\s*root:\s*\[\]\s*\}\s*\}\);/;
+      const m = s.match(re);
+      if (!m) { console.error("anchor not found: hmr loader.create call — dsh layout changed"); process.exit(2); }
+      const ins = "\n\t\t\t\t/* sylvia:await-hmr-settle */" +
+        "\n\t\t\t\t{" +
+        "\n\t\t\t\t\tconst he = Object.values(ctx.loader.store).find((e) => e && e.options && String(e.options.name).includes(\"cordis-plugin-hmr\"));" +
+        "\n\t\t\t\t\tif (he && he.fiber && he.fiber.await) await Promise.race([he.fiber.await().catch(() => {}), new Promise((r) => setTimeout(r, 10000))]);" +
+        "\n\t\t\t\t}";
+      fs.writeFileSync(f, s.replace(re, (mm) => mm + ins));
+    ' "$f" || die "could not patch $f (anchor not found — dsh layout changed; check profile-boot-*.js)"
+    grep -q "sylvia:await-hmr-settle" "$f" || die "profile-boot patch did not land in $f"
+    patched=1
+    ok "profile-boot awaits hmr fiber settle before watchUserPatches ($(basename "$f"))"
+  done
+  [ "$found" -eq 1 ] || die "no profile-boot-*.js under $gmp/dsh/lib contains cordis-plugin-hmr — dsh layout changed"
+  [ "$patched" -eq 1 ] || skip "profile-boot already awaits hmr fiber settle"
+}
+
 # =============================================================================
 #  MODULE 4 — Mobile/Android patches (fork installer, 12 local rc.7 tarballs)
 # =============================================================================
@@ -239,6 +429,15 @@ module_dsh_patch() {
   fi
   if [ "$patch_ok" -eq 1 ] \
      && node -e "process.exit(require(process.argv[1]).version==='0.1.0-rc.7'?0:1)" "$GMP/dsh-client-ui-layout/package.json"; then
+    # Even when the top-level tree is correct, npm may have nested NEWER
+    # upstream prereleases inside the CLI's own node_modules where they
+    # shadow the patches at resolution time — prune before trusting it.
+    _prune_nested_fork_copies "$GMP" "${dsh_siblings[@]}"
+    # Repair-only fixes for state an earlier (or partial) run can leave behind:
+    _pin_hmr_17 "$GMP"
+    _patch_profile_boot_hmr_settle "$GMP"
+    _align_client_modules_to_fe "$GMP"
+    _patch_attachment_local_image_dimension "$GMP"
     skip "mobile patch already applied (CLI rc.6 + 12 rc.7 packages present)"
     return 0
   fi
@@ -333,6 +532,19 @@ module_dsh_patch() {
     [ -f "$GMP/$sib2/package.json" ] \
       || die "after installing all specs, $GMP/$sib2/package.json is still missing — re-run to repair."
   done
+  # npm nests its own newest-prerelease copies of the fork packages inside the
+  # CLI's tree during a fresh install too — prune before declaring success.
+  _prune_nested_fork_copies "$GMP" "${dsh_siblings[@]}"
+  # A fresh install pulls the newest cordis-plugin-hmr (no registerConfig) and
+  # a pristine profile-boot (no fiber-settle wait) — apply both boot fixes.
+  _pin_hmr_17 "$GMP"
+  _patch_profile_boot_hmr_settle "$GMP"
+  # The fork's rc.7 client-modules tarball predates the __ModuleLoader__ facade
+  # the current frontend requires — re-align after the tarball install above.
+  _align_client_modules_to_fe "$GMP"
+  # The fork's rc.7 attachment-local predates rc.8's imageLimits contract —
+  # patch the added key (Android-critical fork changes must be preserved).
+  _patch_attachment_local_image_dimension "$GMP"
   ok "mobile/Android patches applied (CLI rc.6 + 12 rc.7 packages)"
 }
 
@@ -453,7 +665,56 @@ module_sylvia_daemon() {
     die "sylvia-daemon did not become healthy on :$probe_port"
   fi
   rm -f "$probe_log"
-  ok "sylvia-daemon verified (healthy on :$probe_port)"
+  ok "sylvia-daemon verified (healthy on :$probe_port, probe)"
+}
+
+# =============================================================================
+#  MODULE 5d — local modules (§9) — seed ~/.sylvia/modules/ from repo modules/
+# =============================================================================
+# Modules are user-owned after seeding (settings.env, logs, run.pid, and
+# node_modules all live inside the module dir), so an EXISTING module directory
+# is never overwritten — re-running install.sh only adds modules that are
+# missing. The daemon discovers modules at boot, so a restart of the harness
+# (start-sylvia.sh) is needed after new ones appear.
+module_local_modules() {
+  CURRENT_MODULE="local modules"
+
+  local src=""
+  if [ -d "$SCRIPT_DIR/modules" ]; then
+    src="$SCRIPT_DIR/modules"
+    note "using local modules ($src)"
+  else
+    local repo_dir="$SYLVIA_HOME/repo"
+    if [ ! -d "$repo_dir/modules" ]; then
+      ensure_dir "$SYLVIA_HOME"
+      note "cloning Sylvia repo for modules: $SYLVIA_REPO_URL"
+      rm -rf "$repo_dir"
+      git clone --depth 1 "$SYLVIA_REPO_URL" "$repo_dir" || die "git clone of Sylvia repo failed ($SYLVIA_REPO_URL)"
+    fi
+    src="$repo_dir/modules"
+  fi
+
+  ensure_dir "$SYLVIA_HOME/modules"
+  local seeded=0 dir id dest
+  for dir in "$src"/*/; do
+    [ -f "$dir/module.json" ] || continue
+    id="$(basename "$dir")"
+    dest="$SYLVIA_HOME/modules/$id"
+    if [ -d "$dest" ]; then
+      skip "module $id already present ($dest)"
+      continue
+    fi
+    cp -r "$dir" "$dest" || die "could not copy module $id to $dest"
+    chmod +x "$dest/scripts/"*.sh 2>/dev/null || true
+    seeded=$((seeded + 1))
+    ok "module $id seeded ($dest)"
+  done
+
+  if [ "$seeded" -gt 0 ]; then
+    ok "modules seeded: $seeded (restart the daemon to discover them)"
+  else
+    note "no new modules to seed"
+  fi
 }
 
 # =============================================================================
@@ -506,25 +767,77 @@ _register_sylvia_bridge() {
     ln -s "$SYLVIA_BRIDGE_DIR" "$profile_nm/sylvia-bridge" || die "could not link sylvia-bridge into profile"
     ok "linked sylvia-bridge -> profile node_modules"
   fi
+  # The bridge has no build step, so it bare-imports @deepseek-ai/schemastery
+  # and @deepseek-ai/dsh-llm at runtime. npm keeps those nested inside the
+  # CLI's own tree, invisible to plain ESM resolution from ~/.sylvia — symlink
+  # them into the bridge's node_modules, resolved the same way the harness does.
+  node -e '
+    const { createRequire } = require("module");
+    const path = require("path");
+    const fs = require("fs");
+    const req = createRequire(path.join(process.argv[1], "probe.js"));
+    const dest = process.argv[2];
+    fs.mkdirSync(dest, { recursive: true });
+    for (const pkg of ["schemastery", "dsh-llm"]) {
+      let root = null;
+      try { root = path.dirname(req.resolve("@deepseek-ai/" + pkg + "/package.json")); }
+      catch {
+        try { root = path.dirname(path.dirname(req.resolve("@deepseek-ai/" + pkg))); }
+        catch { console.error("cannot resolve @deepseek-ai/" + pkg + " from " + process.argv[1]); process.exitCode = 1; continue; }
+      }
+      const link = path.join(dest, pkg);
+      try { fs.unlinkSync(link); } catch {}
+      fs.symlinkSync(root, link, "dir");
+      console.log("linked @deepseek-ai/" + pkg + " -> " + root);
+    }
+  ' "$DSH_GLOBAL_LIB/lib" "$SYLVIA_BRIDGE_DIR/node_modules/@deepseek-ai" \
+    || warn "could not link bridge runtime deps (sylvia-bridge may fail to load)"
   _cordis_append_plugin "sylvia-bridge" "sylvia-bridge"
 }
 
 # Append one MCP server entry to the cordis patch layer, guarded by its id so a
 # re-run never duplicates. We APPEND as text (never parse+reserialize) because
 # the file may contain !!js expressions and comments a YAML round-trip would drop.
+#
+# SHAPE MATTERS: cordis-plugin-include's applyEntryPatches only CREATES entries
+# from `insert` items (data.push(...insert)). A bare top-level "- id: ..." item
+# is an id-targeted OVERRIDE of an existing bundle entry — when the id is not in
+# any bundle it warns "patch: entry %C not found" and is silently SKIPPED, so
+# the server never loads. Every payload row is therefore wrapped in its own
+# insert item, and legacy bare rows are converted in place on re-run.
 _cordis_append() {
   local id="$1" payload="$2"
   ensure_dir "$(dirname "$CORDIS_FILE")"
   if [ ! -f "$CORDIS_FILE" ]; then
     printf '# Sylvia-managed MCP registrations (appended by install.sh).\n' > "$CORDIS_FILE"
   fi
-  if grep -qE "^- id: ${id}\$" "$CORDIS_FILE"; then
-    skip "cordis entry already present (id: $id)"
+  # Match any indentation so insert rows count too; distinguish shapes below.
+  if grep -qE "^[[:space:]]*-[[:space:]]*id:[[:space:]]*${id}[[:space:]]*\$" "$CORDIS_FILE"; then
+    if grep -qE "^- id:[[:space:]]*${id}[[:space:]]*\$" "$CORDIS_FILE"; then
+      # Legacy bare row from an older install.sh: convert it in place to an
+      # insert item — indent the row and everything until the next top-level
+      # "- " item (top-level bare rows are dead config: cordis skips them).
+      awk -v id="$id" '
+        BEGIN { inrow = 0 }
+        $0 == "- id: " id { print "- insert:"; print "    " $0; inrow = 1; next }
+        inrow && /^- / { inrow = 0 }
+        { print (inrow ? "    " : "") $0 }
+      ' "$CORDIS_FILE" > "$CORDIS_FILE.tmp.$$" && mv "$CORDIS_FILE.tmp.$$" "$CORDIS_FILE"
+      if grep -qE "^- id:[[:space:]]*${id}[[:space:]]*\$" "$CORDIS_FILE"; then
+        warn "legacy bare cordis entry $id could not be converted — fix $CORDIS_FILE by hand"
+      else
+        ok "converted legacy bare cordis entry to insert shape (id: $id)"
+      fi
+    else
+      skip "cordis entry already present (id: $id)"
+    fi
     return 0
   fi
-  # Ensure a separating newline, then append the top-level array item.
+  # Ensure a separating newline, then append the insert item (payload indented
+  # one level under "- insert:").
   [ -s "$CORDIS_FILE" ] && [ "$(tail -c1 "$CORDIS_FILE" | wc -l)" -eq 0 ] && printf '\n' >> "$CORDIS_FILE"
-  printf '%s\n' "$payload" >> "$CORDIS_FILE"
+  printf '%s\n' '- insert:' >> "$CORDIS_FILE"
+  printf '%s\n' "$payload" | sed 's/^/    /' >> "$CORDIS_FILE"
   ok "registered MCP server (id: $id, tools: mcp__<serverName>__*)"
 }
 
@@ -696,7 +1009,7 @@ EOF
   # --- start-sylvia.sh -------------------------------------------------------
   local dsh_bin="${PREFIX:-/data/data/com.termux/files/usr}/lib/node_modules/@deepseek-ai/dsh/lib/bin.js"
   cat > "$SYLVIA_HOME/start-sylvia.sh" <<EOF
-#!/usr/bin/env bash
+#!/data/data/com.termux/files/usr/bin/bash
 # Start Sylvia: the control daemon (background) + the DSH harness web UI (foreground).
 # Run inside tmux for persistence.
 set -euo pipefail
@@ -713,14 +1026,25 @@ if [ -f "$SYLVIA_HOME/sylvia-daemon/index.js" ]; then
   fi
 fi
 
-exec node --expose-internals "$dsh_bin" web --port "\${SYLVIA_WEB_PORT:-3080}"
+# --no-open: DSH's own auto-open fires BEFORE the plugin tree finishes
+# loading, so it pops a browser even when boot crashes. Open it ourselves
+# only once the server actually answers.
+( for i in \$(seq 1 60); do
+    if curl -sf "http://127.0.0.1:\${SYLVIA_WEB_PORT:-3080}/" >/dev/null 2>&1; then
+      termux-open-url "http://127.0.0.1:\${SYLVIA_WEB_PORT:-3080}" >/dev/null 2>&1 || true
+      exit 0
+    fi
+    sleep 1
+  done ) >/dev/null 2>&1 &
+
+exec node --expose-internals "$dsh_bin" web --port "\${SYLVIA_WEB_PORT:-3080}" --no-open
 EOF
   chmod +x "$SYLVIA_HOME/start-sylvia.sh"
   ok "wrote $SYLVIA_HOME/start-sylvia.sh"
 
   # --- sylvia-adb-connect.sh -------------------------------------------------
   cat > "$SYLVIA_HOME/sylvia-adb-connect.sh" <<EOF
-#!/usr/bin/env bash
+#!/data/data/com.termux/files/usr/bin/bash
 # Establish the localhost ADB loopback (the agent's "hands").
 #   emulator : connects to 127.0.0.1:\${SYLVIA_ADB_PORT:-5555} (adbd already listens on TCP)
 #   physical : discovers the Wireless-Debugging TLS port via adb mdns, then connects
@@ -762,6 +1086,22 @@ fi
 EOF
   chmod +x "$SYLVIA_HOME/sylvia-adb-connect.sh"
   ok "wrote $SYLVIA_HOME/sylvia-adb-connect.sh"
+
+  # --- mobile.css starter (the custom-CSS seam's target file) ----------------
+  # sylvia-bridge inlines $SYLVIA_HOME/mobile.css into every index render, so
+  # edits apply on the next browser refresh (no restart). Seed a starter once
+  # and never overwrite — this file is the user/agent's mobile-styling
+  # workspace. Missing starter is not fatal: the bridge simply injects nothing.
+  if [ -f "$SCRIPT_DIR/assets/mobile.css" ]; then
+    if [ -f "$SYLVIA_HOME/mobile.css" ]; then
+      skip "$SYLVIA_HOME/mobile.css already exists"
+    else
+      cp "$SCRIPT_DIR/assets/mobile.css" "$SYLVIA_HOME/mobile.css" || die "could not seed $SYLVIA_HOME/mobile.css"
+      ok "seeded $SYLVIA_HOME/mobile.css (edit + browser refresh applies live)"
+    fi
+  else
+    note "starter assets/mobile.css not found beside this script (skipped) — nothing is injected until $SYLVIA_HOME/mobile.css exists"
+  fi
 }
 
 # =============================================================================
@@ -925,6 +1265,47 @@ sylvia_wheelhouse_resolve() {
 }
 
 # mandatory for ruamel.yaml.clib), drygdryg's gist (proven recipe).
+# =============================================================================
+#  Native extension load fixes for Termux (patchelf; idempotent)
+# =============================================================================
+#  Two native extensions in the mitm trees fail to dlopen on Termux as
+#  built, both verified by import tests on the emulator:
+#   * mitmproxy_rs.abi3.so (abi3 wheel) carries NO libpython NEEDED, and
+#     Termux's python exe exports no C API at all (.dynsym is a 6-entry
+#     stub around Py_BytesMain; Termux's own extensions all link
+#     libpython3.14.so explicitly) -> add that NEEDED entry so the C API
+#     resolves from libpython3.14.so instead of the global scope.
+#   * curl_cffi/_wrapper.abi3.so NEEDs "libc++.so", which bionic resolves
+#     to the Android SYSTEM libc++ (its std::__ndk1 symbols are hidden)
+#     instead of Termux's $PREFIX/lib/libc++_shared.so (1909 exported
+#     __ndk1 symbols, including the sort instantiations the static
+#     libcurl-impersonate references) -> replace-needed with
+#     libc++_shared.so, which bionic finds via LD_LIBRARY_PATH.
+#  Re-runs re-patch any copy uv re-created from an unpatched cache entry.
+_mitm_patchelf_fixes() {
+  local root so
+  for root in "$HOME/.cache/uv" "$HOME/.local/share/uv"; do
+    [ -d "$root" ] || continue
+    while IFS= read -r so; do
+      [ -n "$so" ] || continue
+      case "$so" in
+        *mitmproxy_rs*)
+          if ! patchelf --print-needed "$so" 2>/dev/null | grep -q '^libpython3\.14\.so$'; then
+            patchelf --add-needed libpython3.14.so "$so" \
+              && note "patchelf: +libpython3.14.so ${so##*/uv/}"
+          fi
+          ;;
+        *_wrapper*)
+          if patchelf --print-needed "$so" 2>/dev/null | grep -q '^libc++\.so$'; then
+            patchelf --replace-needed libc++.so libc++_shared.so "$so" \
+              && note "patchelf: libc++.so -> libc++_shared.so ${so##*/uv/}"
+          fi
+          ;;
+      esac
+    done < <(find "$root" \( -name 'mitmproxy_rs.abi3.so' -o -name '_wrapper*.so' \) 2>/dev/null)
+  done
+}
+
 module_mitm_mcp() {
   CURRENT_MODULE="mitmproxy"
   sylvia_ensure_local_bin   # so `have mitmdump` sees ~/.local/bin right away
@@ -1020,7 +1401,7 @@ module_mitm_mcp() {
     local mitm_attempt
     for mitm_attempt in 1 2; do
       if CFLAGS="-Wno-incompatible-function-pointer-types" \
-          uv tool install mitmproxy 2>&1 | tee -a "$mitm_log"; then
+          uv tool install --with 'argon2-cffi-bindings<26' mitmproxy 2>&1 | tee -a "$mitm_log"; then
         break
       fi
       if grep -q "No space left on device" "$mitm_log" 2>/dev/null; then
@@ -1040,7 +1421,7 @@ module_mitm_mcp() {
        Full log: $mitm_log
        The build toolchain was installed above. Verify manually with:
          pkg install rust binutils clang make pkg-config openssl cmake
-         CFLAGS='-Wno-incompatible-function-pointer-types' uv tool install mitmproxy"
+         CFLAGS='-Wno-incompatible-function-pointer-types' uv tool install --with 'argon2-cffi-bindings<26' mitmproxy"
     done
     have mitmdump || {
       # uv installs tool executables to ~/.local/bin; ensure it is on PATH for
@@ -1054,18 +1435,24 @@ module_mitm_mcp() {
 
   # 2. mitmproxy-mcp source (the MCP server uvx will launch).
   local dir="$SYLVIA_HOME/mitmproxy-mcp"
+  local fresh_clone=0
   if [ -f "$dir/pyproject.toml" ]; then
     skip "mitmproxy-mcp already cloned ($dir)"
-    return 0
-  fi
-  if [ -d "$SCRIPT_DIR/reference/mitmproxy-mcp" ]; then
+  elif [ -d "$SCRIPT_DIR/reference/mitmproxy-mcp" ]; then
     ensure_dir "$SYLVIA_HOME"
     rm -rf "$dir"; cp -r "$SCRIPT_DIR/reference/mitmproxy-mcp" "$dir" || die "could not copy mitmproxy-mcp from reference/"
+    fresh_clone=1
   else
     ensure_dir "$SYLVIA_HOME"
     git clone --depth 1 https://github.com/snapspecter/mitmproxy-mcp.git "$dir" || die "git clone of mitmproxy-mcp failed"
+    fresh_clone=1
   fi
-  ok "mitmproxy-mcp source ready ($dir)"
+  if [ "$fresh_clone" -eq 1 ]; then
+    ok "mitmproxy-mcp source ready ($dir)"
+  fi
+
+  # --- pyproject patches: re-checked on EVERY run (a clone made by an older
+  # --- installer version must still receive them; both seds are idempotent).
 
   # Upstream pins 'requires-python = ">=3.12,<3.14"', which rejects Termux's
   # python 3.14 even though mitmproxy 12.2.3 itself supports 3.14 — without
@@ -1075,6 +1462,152 @@ module_mitm_mcp() {
     sed -i.bak 's/requires-python = ">=3.12,<3.14"/requires-python = ">=3.12,<'\
 '3.15"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.bak"
     note "relaxed mitmproxy-mcp requires-python pin (<3.14 -> <3.15) for python $(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+  fi
+
+  # playwright>=1.58.0 is a phantom dependency: the runtime never imports it
+  # (only code-gen templates + tests mention it), yet it is wheel-only with
+  # no android tag, so uvx cannot resolve the project on Termux at all
+  # ("no wheels with a matching platform tag (e.g. android_24_x86_64)").
+  # Comment the line out — TOML comments are legal inside arrays.
+  if grep -q '^[[:space:]]*"playwright>=1.58.0",' "$dir/pyproject.toml" 2>/dev/null; then
+    sed -i 's|^[[:space:]]*"playwright>=1.58.0",|# sylvia: playwright dep removed (no Android wheel; runtime never imports it — code-gen templates only)|' \
+      "$dir/pyproject.toml"
+    note "removed unresolvable playwright dep from mitmproxy-mcp pyproject"
+  fi
+
+  # argon2-cffi-bindings >=26 switched to scikit-build-core, whose Android
+  # handling assumes an NDK cross-compile (empty CMAKE_SYSROOT on Termux ->
+  # CMake dies with "file failed to open for reading:
+  # /include/android/api-level.h"). v25 and earlier build with plain cffi +
+  # clang. mitmproxy's tree accepts 25.x (argon2-cffi wants >=21.2.0), so a
+  # local dep line constrains the resolve; uv intersects it automatically.
+  if ! grep -q '"argon2-cffi-bindings' "$dir/pyproject.toml" 2>/dev/null; then
+    sed -i 's|^\([[:space:]]*\)"python-dotenv>=1.0.0",|\1"python-dotenv>=1.0.0",\n\1"argon2-cffi-bindings<26",  # sylvia: v26+ needs scikit-build Android/NDK sysroot; v25 builds natively on Termux|' \
+      "$dir/pyproject.toml"
+    if grep -q '"argon2-cffi-bindings<26"' "$dir/pyproject.toml" 2>/dev/null; then
+      note "pinned argon2-cffi-bindings<26 in mitmproxy-mcp pyproject (v26 scikit-build cannot build on Termux)"
+    else
+      die "could not add the argon2-cffi-bindings pin to mitmproxy-mcp/pyproject.toml.
+       Upstream likely changed the dependencies layout. Inspect:
+         $dir/pyproject.toml
+       then add \"argon2-cffi-bindings<26\", to [project] dependencies and re-run."
+    fi
+  fi
+
+  # curl-cffi: its build script matches the host against libs.json, which
+  # only lists Android/aarch64 — an x86_64 device dies with
+  # "Unsupported arch: uname_result(system='Android', machine='x86_64')"
+  # (and curl_cffi IS imported at runtime: core/server.py), so the dep
+  # cannot be dropped. Upstream DOES publish the x86_64-android
+  # libcurl-impersonate asset, so build a one-time wheel from a sdist with
+  # that entry added and point the project at it via a PEP 508 file URL.
+  # arm64 devices have a matching upstream entry and resolve PyPI normally
+  # (no local wheel, no file reference).
+  if [ "$(uname -m)" = "x86_64" ]; then
+    local ccffi_ver="0.16.3"
+    local wh="$dir/wheelhouse"
+    ensure_dir "$wh"
+    local ccffi_wheel
+    # pipefail: a not-yet-existing glob makes `ls` exit 2 through the pipe.
+    ccffi_wheel=$(ls "$wh"/curl_cffi-*.whl 2>/dev/null | head -n 1) || true
+    if [ -z "$ccffi_wheel" ]; then
+      note "building patched curl-cffi wheel (upstream libs.json has no Android/x86_64 entry)"
+      local tmp
+      tmp=$(mktemp -d "${TMPDIR:-${PREFIX:-/data/data/com.termux/files/usr}/tmp}/ccffi.XXXXXX")
+      curl -fsSL -o "$tmp/curl_cffi-$ccffi_ver.tar.gz" \
+        "https://files.pythonhosted.org/packages/source/c/curl-cffi/curl_cffi-$ccffi_ver.tar.gz" \
+        || { rm -rf "$tmp"; die "download of curl-cffi $ccffi_ver sdist failed"; }
+      tar -xzf "$tmp/curl_cffi-$ccffi_ver.tar.gz" -C "$tmp" \
+        || { rm -rf "$tmp"; die "extraction of curl-cffi sdist failed"; }
+      python - "$tmp/curl_cffi-$ccffi_ver/libs.json" <<'PYEOF' \
+        || { rm -rf "$tmp"; die "patching curl-cffi libs.json failed"; }
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    table = json.load(f)
+if not any(e.get("system") == "Android" and e.get("machine") == "x86_64" for e in table):
+    table.append({
+        "system": "Android", "machine": "x86_64", "pointer_size": 64,
+        "sysname": "linux-android", "link_type": "static", "libc": "android",
+        "obj_name": "libcurl-impersonate.a", "arch": "x86_64",
+    })
+    with open(path, "w") as f:
+        json.dump(table, f, indent=4)
+    print("libs.json: added Android/x86_64 entry")
+else:
+    print("libs.json: Android/x86_64 entry already present")
+PYEOF
+      uv build --wheel -o "$wh" "$tmp/curl_cffi-$ccffi_ver" \
+        || { local rc=$?; rm -rf "$tmp"; die "uv build of patched curl-cffi failed (exit $rc).
+       Needs: pkg install clang (see the mitmproxy build toolchain above) + network to
+       github.com/lexiforest/curl-impersonate (static libcurl download)."; }
+      rm -rf "$tmp"
+      ccffi_wheel=$(ls "$wh"/curl_cffi-*.whl 2>/dev/null | head -n 1) || true
+      [ -n "$ccffi_wheel" ] || die "patched curl-cffi wheel not found in $wh after build"
+      ok "patched curl-cffi wheel built ($(basename "$ccffi_wheel"))"
+    else
+      skip "patched curl-cffi wheel already built ($(basename "$ccffi_wheel"))"
+    fi
+    # Point the dependency at the local wheel (idempotent).
+    if ! grep -q '"curl-cffi @ file:' "$dir/pyproject.toml" 2>/dev/null; then
+      sed -i "s|^[[:space:]]*\"curl-cffi>[^\"]*\",|    \"curl-cffi @ file://${ccffi_wheel}\",|" "$dir/pyproject.toml"
+      if grep -q '"curl-cffi @ file:' "$dir/pyproject.toml" 2>/dev/null; then
+        note "mitmproxy-mcp pyproject now uses the local patched curl-cffi wheel"
+      else
+        die "could not repoint curl-cffi at the local wheel in $dir/pyproject.toml.
+       Upstream changed the dependencies layout — edit it by hand:
+         \"curl-cffi>=...\ -> \"curl-cffi @ file://${ccffi_wheel}\",
+       then re-run this installer."
+      fi
+    fi
+  fi
+
+  # 3. google-re2 build headers. uv compiles every C dependency from source
+  # on Termux (PyPI wheels carry only manylinux/macos/win tags), and
+  # google-re2's sdist expects SYSTEM pybind11 headers (its build backend
+  # doesn't declare pybind11, so the isolated build env lacks them —
+  # "fatal error: 'pybind11/buffer_info.h' file not found") plus libre2 to
+  # link against. re2 IS imported at module top level (core/server.py,
+  # core/interceptor.py), so the dependency itself cannot be dropped.
+  local inc="${PREFIX:-/data/data/com.termux/files/usr}/include"
+  if [ ! -d "$inc/pybind11" ] || [ ! -f "$inc/re2/re2.h" ]; then
+    note "installing pybind11 + libre2 headers (google-re2 source build needs them)"
+    if ! pkg install -y pybind11 libre2 2>/dev/null; then
+      pkg update -y >/dev/null 2>&1 || warn "pkg update returned non-zero; continuing"
+      pkg install -y pybind11 libre2 || die "pkg install pybind11 libre2 failed — mitmproxy-mcp cannot build google-re2 without them.
+       Fix (then re-run this installer):  pkg install pybind11 libre2"
+    fi
+    record_packages pybind11 libre2
+    ok "google-re2 build headers installed"
+  fi
+
+  # 4. Native extension load fixes (see _mitm_patchelf_fixes for the why).
+  # Idempotent, and re-run every time to repair copies uv re-created from
+  # an unpatched cache entry.
+  if ! have patchelf; then
+    note "installing patchelf (mitm native-extension load fixes)"
+    pkg install -y patchelf || die "pkg install patchelf failed — install it manually and re-run"
+    record_packages patchelf
+  fi
+  _mitm_patchelf_fixes
+
+  # 5. Warm-build the uvx env NOW instead of at first harness boot. The MCP
+  # client's initial handshake runs on a timeout, while the first source
+  # build takes minutes (every C dep compiles) — booting into that would
+  # time the mitmproxy server out and leave its tools missing until a manual
+  # reload. stdin is closed: the server builds, starts, reads EOF and exits;
+  # uv caches the env so later launches are seconds. Best-effort only — on
+  # failure/timeout the first boot builds it instead (tools may then need a
+  # reload to appear).
+  if ! have mitmproxy-mcp; then
+    note "pre-building mitmproxy-mcp venv (one-time source compile, can take minutes)"
+    local warm_log="$SYLVIA_HOME/.mitmproxy-mcp-warm.log"
+    if timeout 600 uvx --from "$dir" mitmproxy-mcp </dev/null >"$warm_log" 2>&1; then
+      ok "mitmproxy-mcp venv built and cached (first launch will be fast)"
+    else
+      warn "mitmproxy-mcp pre-build incomplete (timeout or error) — first boot will build it;
+       mitmproxy tools may need a reload to appear. Full log: $warm_log"
+    fi
   fi
 }
 
@@ -1155,6 +1688,7 @@ module_dsh_cli
 module_dsh_patch
 module_sylvia_mcp
 module_sylvia_daemon
+module_local_modules
 module_sylvia_bridge
 module_tasker_mcp
 module_mitm_mcp

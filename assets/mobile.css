@@ -1,0 +1,33 @@
+/* Sylvia — mobile UI overrides for the DSH web client.
+ *
+ * This file is inlined into the served index page by sylvia-bridge
+ * (~/.sylvia/mobile.css), so:
+ *   1. edit this file on the device,
+ *   2. refresh the browser,
+ *   3. the change is live — no harness restart, no rebuild.
+ *
+ * Known offender: the settings dialog renders wider than a phone screen.
+ * Scope rules to the mobile breakpoint so desktop stays untouched, and
+ * refine selectors from the browser's inspector as you go.
+ */
+
+@media (max-width: 767px) {
+  /* Dialogs must fit inside the viewport (vh fallback for older engines). */
+  [role="dialog"] {
+    max-width: 100vw !important;
+    max-height: 100vh !important;
+    max-height: 100dvh !important;
+    box-sizing: border-box !important;
+    overflow: auto !important;
+    overflow-wrap: anywhere;
+  }
+
+  /* Flex/grid children default to min-width:auto, which blows past the
+     viewport when content (paths, URLs, model names) is wide — the classic
+     overflow fix. Descendant rules stay un-!important so inner layouts can
+     still override them. */
+  [role="dialog"] * {
+    min-width: 0;
+    max-width: 100%;
+  }
+}

@@ -149,7 +149,7 @@ export class ModuleManager {
 		const out = [];
 		for (const [id, mod] of this.modules) {
 			const rt = this.runtime.get(id);
-			const saved = this.store ? this.store.read(this._settingsFile(id), {}) : {};
+			const saved = this.store ? await this.store.read(this._settingsFile(id), {}) : {};
 			out.push({
 				id,
 				name: mod.manifest.name,
@@ -206,7 +206,7 @@ export class ModuleManager {
 				rt.lastError = `netgate register failed: ${e.message}`;
 			}
 		}
-		if (this.store) this.store.write(this._settingsFile(id), { ...(this.store.read(this._settingsFile(id), {})), lastDesired: "on" });
+		if (this.store) await this.store.write(this._settingsFile(id), { ...(await this.store.read(this._settingsFile(id), {})), lastDesired: "on" });
 		this.log?.(`module ${id} started (pid ${pid})`);
 		return { id, running: true, pid };
 	}
@@ -240,7 +240,7 @@ export class ModuleManager {
 			rt.pid = null;
 			rt.startedAt = null;
 		}
-		if (this.store) this.store.write(this._settingsFile(id), { ...(this.store.read(this._settingsFile(id), {})), lastDesired: "off" });
+		if (this.store) await this.store.write(this._settingsFile(id), { ...(await this.store.read(this._settingsFile(id), {})), lastDesired: "off" });
 		return { id, running: false, offExit: scriptResult ? scriptResult.code : null };
 	}
 
@@ -283,7 +283,7 @@ export class ModuleManager {
 				if (!known.has(k)) throw new Error(`unknown setting: ${k}`);
 			}
 		}
-		if (this.store) this.store.write(this._settingsFile(id), { ...(this.store.read(this._settingsFile(id), {})), settings });
+		if (this.store) await this.store.write(this._settingsFile(id), { ...(await this.store.read(this._settingsFile(id), {})), settings });
 		await this._writeEnv(mod);
 
 		let editResult = null;
@@ -291,14 +291,17 @@ export class ModuleManager {
 		if (rel && !mod.missingScripts.includes("settingsEdit")) {
 			const r = await this._execScript(mod, rel, { input: JSON.stringify(settings) });
 			editResult = { exitCode: r.code, stderr: r.stderr?.slice(0, 500) || undefined };
-			if (r.code !== 0) throw new Error(`settings-edit.sh failed (exit ${r.code}): ${editResult.stderr ?? ""}`);
+			if (r.code !== 0) {
+				const why = r.spawnError ? `spawn error: ${r.spawnError}` : r.timedOut ? "timed out" : `exit ${r.code}`;
+				throw new Error(`settings-edit.sh failed (${why}): ${editResult.stderr ?? ""}`);
+			}
 		}
 		return { id, settings, edit: editResult };
 	}
 
 	async _writeEnv(mod) {
 		const { writeFile } = await import("node:fs/promises");
-		const saved = this.store ? this.store.read(this._settingsFile(mod.manifest.id), {}) : {};
+		const saved = this.store ? await this.store.read(this._settingsFile(mod.manifest.id), {}) : {};
 		const settings = saved.settings ?? {};
 		const lines = Object.entries(settings).map(([k, v]) => {
 			const value = Array.isArray(v) ? v.join(" ") : typeof v === "boolean" ? (v ? "1" : "0") : String(v);
@@ -343,7 +346,7 @@ export class ModuleManager {
 				if (mod.manifest.behavior === "always") {
 					await this.start(id);
 				} else if (mod.manifest.behavior === "manual") {
-					const saved = this.store ? this.store.read(this._settingsFile(id), {}) : {};
+					const saved = this.store ? await this.store.read(this._settingsFile(id), {}) : {};
 					if (saved.lastDesired === "on") await this.start(id);
 				}
 				// tasker: lifecycle belongs to Tasker profiles — manager does nothing
