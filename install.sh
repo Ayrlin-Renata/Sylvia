@@ -122,6 +122,23 @@ record_packages() {
 module_base_packages() {
   CURRENT_MODULE="base packages"
 
+  # ALWAYS bring the whole Termux tree to lockstep before installing anything.
+  # On a fresh install dozens of packages are behind; letting individual
+  # `pkg install` calls pull dependencies forward half-way yields mixed-version
+  # trees (seen in the wild: apt upgraded curl/libcurl to 8.23.0 but not its
+  # TLS/QUIC backend -> "CANNOT LINK EXECUTABLE curl: cannot locate symbol
+  # SSL_set_quic_tls_early_data_enabled" -> git/curl/npm all die afterwards).
+  note "updating apt indexes and upgrading all Termux packages (a fresh install may download tens of MB)"
+  pkg update -y >/dev/null 2>&1 || warn "pkg update returned non-zero; continuing"
+  if [ "$FORCE_CONFNEW" -eq 1 ]; then
+    pkg upgrade -y -o "Dpkg::Options::=--force-confnew" \
+      || die "pkg upgrade failed — the package tree must be consistent before installing. Fix manually: pkg upgrade -y"
+  else
+    pkg upgrade -y \
+      || die "pkg upgrade failed — the package tree must be consistent before installing. Fix manually: pkg upgrade -y"
+  fi
+  ok "Termux package tree upgraded"
+
   local missing=()
   have git   || missing+=(git)
   have bash  || missing+=(bash)
@@ -142,7 +159,6 @@ module_base_packages() {
     skip "all base packages present (git, bash, adb, rclone, tmux, node, uv, nmap, iproute2, python, termux-api)"
   else
     note "installing: ${missing[*]}"
-    pkg update -y >/dev/null 2>&1 || warn "pkg update returned non-zero; continuing"
     # --force-confnew auto-answers "Y" (install the maintainer's version) to dpkg's
     # conffile prompts (openssl.cnf, sources.list, bashrc, profile, ...). Without the
     # flag dpkg stops and waits. opt-in: users with custom edits must not set it.
@@ -154,6 +170,19 @@ module_base_packages() {
     fi
     ok "installed base packages: ${missing[*]}"
     record_packages "${missing[@]}"
+  fi
+
+  # Linker sanity: a mixed-version tree otherwise surfaces much later as a
+  # confusing git/npm failure. Repair once with a forced full upgrade.
+  if ! curl --version >/dev/null 2>&1; then
+    note "curl cannot execute (mixed-version library tree) — forcing a full upgrade to repair"
+    if [ "$FORCE_CONFNEW" -eq 1 ]; then
+      pkg upgrade -y -o "Dpkg::Options::=--force-confnew"
+    else
+      pkg upgrade -y
+    fi
+    curl --version >/dev/null 2>&1 \
+      || die "curl is still broken after a full upgrade. Inspect manually: pkg upgrade -y ; ldd \$PREFIX/bin/curl"
   fi
 
   # node is now guaranteed present (either pre-existing or just installed).

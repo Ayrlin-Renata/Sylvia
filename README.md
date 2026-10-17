@@ -26,6 +26,10 @@ them from the linked source.
 For **Tasker-related** features, also install (nothing auto-installs these — set them up
 yourself, then the agent can use them):
 
+- **Termux:API** ([F-Droid](https://f-droid.org/en/packages/com.termux.api/)) — the Android
+  handlers behind every `termux-*` command. The installer runs `pkg install termux-api`, but
+  that is **only the CLI half** — without this app the commands are silent no-ops. Install it
+  from F-Droid yourself.
 - **Termux:Tasker** ([F-Droid](https://f-droid.org/en/packages/com.termux.tasker/)) — lets Tasker run
   commands inside Termux directly.
 - **Shizuku** ([Play Store](https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api)) —
@@ -69,10 +73,14 @@ re-run the same command.
 
 ### What it installs
 
-1. **Termux base packages** — `nodejs-lts`, `git`, `bash`, `tmux`, `android-tools` (provides
+1. **Termux base packages** — first a full `pkg update && pkg upgrade` so the entire tree is
+   in lockstep (mixing old libraries with freshly-installed packages breaks binaries — seen
+   as a `curl` that cannot link against its own TLS backend), then installs anything missing:
+   `nodejs-lts`, `git`, `bash`, `tmux`, `android-tools` (provides
    `adb`), `rclone`, `uv`, `nmap`, `iproute2` (provides `ip`, used for network detection),
    `python` (interpreter for `uv`/`uvx` → mitmproxy), `termux-api` (the `termux-*` CLI
-   stubs, e.g. `termux-wake-lock` — the companion app is optional).
+   stubs, e.g. `termux-wake-lock` — **CLI half only; the Termux:API app is yours to
+   install**, see §1).
 2. **DSH CLI + mobile/Android patches** — clones your
    [`Ayrlin-Renata/Deepseek-harness-mobile`](https://github.com/Ayrlin-Renata/Deepseek-harness-mobile)
    fork, then installs the CLI (`@deepseek-ai/dsh`) and overlays the 12 local `rc.7`
@@ -424,6 +432,7 @@ with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those
 | Symptom | Fix |
 |---------|-----|
 | `nodejs-lts` install fails | You're using the Play Store Termux build — uninstall and install from F-Droid or GitHub releases. |
+| `CANNOT LINK EXECUTABLE "curl": cannot locate symbol …` | Mixed-version Termux tree: apt pulled `curl` forward but not its TLS/QUIC backend. Run `pkg upgrade -y` to finish, then re-run `install.sh` (it now always full-upgrades the tree before installing anything). |
 | ADB connection drops immediately | Enable **Wireless debugging** (physical) or restart the emulator. Run `~/.sylvia/sylvia-adb-connect.sh` manually and check output. |
 | Daemon not responding | Check `~/.sylvia/sylvia-daemon.log`. Verify port: `curl http://127.0.0.1:3090/api/health`. |
 | MCP tools don't appear in the model's toolset | `grep -n "sylvia-mcp" ~/.dsh/profiles/web/cordis.patch.yml` — the entry must exist. Re-run `install.sh`; the append is guarded by `id` so it won't duplicate. |
