@@ -583,6 +583,123 @@ module_dsh_patch() {
 }
 
 # =============================================================================
+#  DSH AMBIENT DEPENDENCY SWEEP
+# =============================================================================
+# The fork pins the CLI at 0.1.0-rc.6, but npm resolves the CLI's caret-ranged
+# transitive deps (dsh/node_modules/@deepseek-ai/*) to whatever is newest on
+# the registry — currently the 0.1.0-rc.8 train. Those rc.8 packages import
+# "ambient" helper packages (cordis-plugin-group, dsh-timeout, dsh-scope,
+# dsh-atomic-write, dsh-compaction, …) that NEITHER they NOR the rc.6 CLI
+# declare in their package.json, so npm never installs them and every boot
+# dies with a wall of "plugin(s) failed to load / could not be resolved".
+# (Devices whose tree predates the rc.8 train never showed this; fresh
+# installs hit it every time.)
+#
+# Fix: sweep every @deepseek-ai package in the global tree, import its entry
+# point directly, and collect "Cannot find (package|module)" errors. Missing
+# @deepseek-ai packages are npm-installed globally at the matching train
+# version (prefer the tree's 0.1.0-rc.* train, else newest release); any
+# other bare name is a hard error (too unusual to guess). Repeat until clean
+# (the transitive deps of what we install can surface new gaps). The sweep is
+# read-only, so a re-run is just a fast verification pass.
+module_ambient_deps() {
+  CURRENT_MODULE="DSH ambient deps"
+  local gmp="${PREFIX:-/data/data/com.termux/files/usr}/lib/node_modules"
+  local sweep="$SYLVIA_HOME/ambient-sweep.mjs"
+  local round names other spec pick
+
+  [ -d "$gmp/@deepseek-ai" ] || { skip "no DSH tree yet (skipped)"; return 0; }
+
+  cat > "$sweep" <<'SWEEP_EOF'
+// Import every @deepseek-ai package entry in the global tree and report bare
+// packages that fail to resolve. Both CJS and ESM work via import(); non-
+// resolution errors are expected (plugins assume a cordis ctx at apply()-time)
+// and are ignored — only "Cannot find package/module 'x'" counts.
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const root = process.argv[2];
+const missing = new Map();
+const entries = [];
+
+function entryOf(pkgDir) {
+  let pkg;
+  try { pkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')); }
+  catch { return null; }
+  let rel = pkg.exports && pkg.exports['.'];
+  if (rel && typeof rel === 'object') rel = rel.import || rel.default || rel.require;
+  if (rel && typeof rel === 'object') rel = rel.import || rel.default || rel.require;
+  if (typeof rel !== 'string' || !rel) rel = pkg.module || pkg.main || 'index.js';
+  if (rel.startsWith('./')) rel = rel.slice(2);
+  for (const file of [join(pkgDir, rel), join(pkgDir, rel + '.js'), join(pkgDir, rel, 'index.js')]) {
+    if (existsSync(file)) return file;
+  }
+  return null;
+}
+
+function collect(dir) {
+  if (!existsSync(dir)) return;
+  for (const name of readdirSync(dir)) {
+    if (name.startsWith('.')) continue;
+    const pkgDir = join(dir, name);
+    if (existsSync(join(pkgDir, 'package.json'))) entries.push(pkgDir);
+  }
+}
+
+collect(join(root, '@deepseek-ai'));                       // fork tarballs etc.
+collect(join(root, 'dsh', 'node_modules', '@deepseek-ai')); // nested tree
+
+const seen = new Set();
+for (const pkgDir of entries) {
+  const entry = entryOf(pkgDir);
+  if (!entry || seen.has(entry)) continue;
+  seen.add(entry);
+  try {
+    await import(pathToFileURL(entry).href);
+  } catch (e) {
+    const m = String((e && e.message) || '').match(/Cannot find (?:package|module) '([^']+)'/);
+    if (m && !m[1].startsWith('.') && !m[1].startsWith('/')) {
+      missing.set(m[1], (missing.get(m[1]) || 0) + 1);
+    }
+  }
+}
+process.stdout.write(JSON.stringify([...missing.keys()]));
+SWEEP_EOF
+
+  for round in 1 2 3 4 5 6; do
+    names=$(node "$sweep" "$gmp" 2>/dev/null) || names="[]"
+    [ -z "$names" ] && names="[]"
+    if [ "$names" = "[]" ]; then
+      ok "ambient dependency sweep clean (round $round) — tree imports resolve"
+      return 0
+    fi
+    # Anything that is not an @deepseek-ai package we can version-pick is
+    # unexpected: fail loudly instead of guessing at arbitrary packages.
+    other=$(printf '%s' "$names" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const a=JSON.parse(d);console.log(a.filter(n=>!n.startsWith("@deepseek-ai/")).join(" "))}catch(e){console.log("")}})')
+    if [ -n "$other" ]; then
+      die "unresolvable non-DSH ambient package(s): $other
+           The tree imports them but they are not on npm under @deepseek-ai —
+           inspect with: node $sweep $gmp"
+    fi
+    spec=""
+    for name in $(printf '%s' "$names" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{console.log(JSON.parse(d).join("\n"))}catch(e){}})'); do
+      pick=$(npm view "$name" versions --json 2>/dev/null | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const a=JSON.parse(d);const rc=a.filter(v=>v.startsWith("0.1.0-rc."));console.log((rc.length?rc:a).pop())}catch(e){console.log("")}})')
+      if [ -n "$pick" ]; then
+        spec="$spec $name@$pick"
+      else
+        die "no published version found for $name (npm view failed) — check registry connectivity"
+      fi
+    done
+    note "round $round: installing missing ambient package(s):$(printf '%s' "$spec" | cut -c1-200)"
+    # shellcheck disable=SC2086
+    npm install -g $spec --no-audit --no-fund >/dev/null 2>&1 \
+      || die "npm install of ambient package(s) failed:$spec"
+  done
+  die "ambient dependency sweep did not converge after 6 rounds — last: $names"
+}
+
+# =============================================================================
 #  MODULE 5 — sylvia-mcp server source + deps
 # =============================================================================
 SYLVIA_MCP_DIR=""
@@ -1682,6 +1799,18 @@ PYEOF
       warn "mitmproxy-mcp pre-build incomplete (timeout or error) — first boot will build it;
        mitmproxy tools may need a reload to appear. Full log: $warm_log"
     fi
+
+    # 6. Re-patch AFTER the warm build. curl_cffi (a mitmproxy-mcp dep, NOT
+    #    mitmproxy) only compiles here, so its _wrapper.abi3.so did not exist
+    #    during step 4's scan — as built it NEEDs the Android system
+    #    "libc++.so" (hidden std::__ndk1 symbols) and dies with a dlopen
+    #    "cannot locate symbol _ZNSt6__ndk16__sort..." error. Step 4 already
+    #    rewrites it to libc++_shared.so once it exists; without this second
+    #    pass the just-compiled copy stays broken and every boot fails the
+    #    same way. Both copies uv keeps are hardlinks to one cache object, so
+    #    patching the found path covers them. Idempotent: step 4's
+    #    grep-guard makes a re-run a no-op.
+    _mitm_patchelf_fixes
   fi
 }
 
@@ -1760,6 +1889,7 @@ module_preconditions
 module_base_packages
 module_dsh_cli
 module_dsh_patch
+module_ambient_deps
 module_sylvia_mcp
 module_sylvia_daemon
 module_local_modules

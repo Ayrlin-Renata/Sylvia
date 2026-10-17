@@ -101,7 +101,7 @@ re-run the same command.
    frozen `dsh-attachment-local` (rc.7) bytes with the `maxImageDimension` key
    that rc.8's `session.history` image-limits projection requires — in place,
    preserving the fork's Android-critical changes (lazy sharp loading for
-   Termux, the FUSE hard-link fallback). All of it re-applies on
+   Termux, the FUSE hard-link fallback). Finally it runs an **ambient dependency sweep** — the newest registry train's packages import helpers (`cordis-plugin-group`, `dsh-timeout`, `dsh-scope`, ...) that neither they nor the pinned `rc.6` CLI declare, so npm never installs them and every boot would die with `plugin tree failed to load`; the installer imports every package in the tree, installs whatever is missing at the matching version, and repeats until clean. All of it re-applies
    re-run.
 3. **`sylvia-mcp`** — the custom MCP server, source + `npm install` + a stdio handshake
    smoke-test that confirms all 9 tools register.
@@ -446,6 +446,7 @@ with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those
 | `EADDRINUSE … 3080` at launch | A previous harness instance is still running — kill the stale `node … bin.js web` process and relaunch. |
 | Harness not running after a reboot | Termux:Boot autostart isn't active: install the app from F-Droid and **open it once** (the boot receiver registers on first launch), check the seeded script with `ls ~/.termux/boot/`, and re-run `install.sh` if it's missing. |
 | mitmproxy tools missing on first launch | The first `uvx` build is slow — check `~/.sylvia/.mitmproxy-mcp-warm.log`, then re-run `install.sh` (warm build and `patchelf` fixes are idempotent). Reload the MCP servers from the UI if they still don't appear. |
+| Boots into a wall of `plugin(s) failed to load … could not be resolved` (nearly every core plugin) | The registry published a newer DSH train that imports helpers the pinned CLI never declares (`Cannot find package '@deepseek-ai/dsh-timeout'` and friends in the boot log — npm never installs them because nothing declares them). Re-run `install.sh`: the ambient dependency sweep imports every package in the tree, installs each missing package at the matching version, and verifies the sweep is clean. |
 
 ---
 
