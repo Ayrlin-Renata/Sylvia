@@ -128,14 +128,18 @@ module_base_packages() {
   # trees (seen in the wild: apt upgraded curl/libcurl to 8.23.0 but not its
   # TLS/QUIC backend -> "CANNOT LINK EXECUTABLE curl: cannot locate symbol
   # SSL_set_quic_tls_early_data_enabled" -> git/curl/npm all die afterwards).
+  # apt-get, NOT pkg, for the update/upgrade: the pkg wrapper shells out to curl
+  # (mirror probe), and that is exactly the binary a mixed tree breaks — apt
+  # itself has no such dependency. Error output on the field fix also recommends
+  # `apt update && apt full-upgrade`.
   note "updating apt indexes and upgrading all Termux packages (a fresh install may download tens of MB)"
-  pkg update -y >/dev/null 2>&1 || warn "pkg update returned non-zero; continuing"
+  apt-get update >/dev/null 2>&1 || warn "apt-get update returned non-zero; continuing"
   if [ "$FORCE_CONFNEW" -eq 1 ]; then
-    pkg upgrade -y -o "Dpkg::Options::=--force-confnew" \
-      || die "pkg upgrade failed — the package tree must be consistent before installing. Fix manually: pkg upgrade -y"
+    apt-get full-upgrade -y -o "Dpkg::Options::=--force-confnew" \
+      || die "apt-get full-upgrade failed — the package tree must be consistent before installing. Fix manually: apt-get update && apt-get full-upgrade -y"
   else
-    pkg upgrade -y \
-      || die "pkg upgrade failed — the package tree must be consistent before installing. Fix manually: pkg upgrade -y"
+    apt-get full-upgrade -y \
+      || die "apt-get full-upgrade failed — the package tree must be consistent before installing. Fix manually: apt-get update && apt-get full-upgrade -y"
   fi
   ok "Termux package tree upgraded"
 
@@ -173,16 +177,17 @@ module_base_packages() {
   fi
 
   # Linker sanity: a mixed-version tree otherwise surfaces much later as a
-  # confusing git/npm failure. Repair once with a forced full upgrade.
+  # confusing git/npm failure. Repair once with a forced full upgrade (apt-get:
+  # pkg itself needs the curl that this state breaks).
   if ! curl --version >/dev/null 2>&1; then
-    note "curl cannot execute (mixed-version library tree) — forcing a full upgrade to repair"
+    note "curl cannot execute (mixed-version library tree) — forcing apt-get full-upgrade to repair"
     if [ "$FORCE_CONFNEW" -eq 1 ]; then
-      pkg upgrade -y -o "Dpkg::Options::=--force-confnew"
+      apt-get full-upgrade -y -o "Dpkg::Options::=--force-confnew"
     else
-      pkg upgrade -y
+      apt-get full-upgrade -y
     fi
     curl --version >/dev/null 2>&1 \
-      || die "curl is still broken after a full upgrade. Inspect manually: pkg upgrade -y ; ldd \$PREFIX/bin/curl"
+      || die "curl is still broken after a full upgrade. Inspect manually: apt-get update && apt-get full-upgrade -y ; ldd \$PREFIX/bin/curl"
   fi
 
   # node is now guaranteed present (either pre-existing or just installed).
