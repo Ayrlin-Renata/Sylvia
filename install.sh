@@ -521,6 +521,107 @@ module_dsh_patch() {
 }
 
 # =============================================================================
+#  MODULE 4.5 — node-addon-require-builtin native binding (Android)
+# =============================================================================
+# DSH 0.2.x boots through node-addon-require-builtin ("host preparation"), a
+# native binding that loads Node internal modules. Its published platform
+# packages cover linux/darwin/win ONLY — npm has no
+# node-addon-require-builtin-android-x64 (404) — and the published entry ships
+# neither source nor a postinstall, so the loader's three fallbacks
+# (optional-package / local-build nodeabi / local-build napi) all miss on
+# Termux and every boot dies with:
+#   No usable native binding found for node-addon-require-builtin-android-x64
+# We supply the binding ourselves: download the prebuilt NAPI artifact from
+# this repo (native/<arch>/napi-v9/require_builtin.node — one file per arch;
+# NAPI v9 is ABI-stable, so a single build covers every Node version), else
+# build it from upstream source on-device. Either path is verified by running
+# the exact call app-boot makes (requireBuiltin of an internal module, with
+# --expose-internals like the real launcher).
+_binding_loads() {
+  local pkgdir="$1"
+  node --expose-internals -e '
+    const { createRequire } = require("module");
+    const req = createRequire(process.argv[1] + "/package.json");
+    const addon = req("node-addon-require-builtin");
+    const esm = addon.requireBuiltin("internal/modules/esm/loader");
+    if (typeof esm.getOrInitializeCascadedLoader !== "function") process.exit(2);
+  ' "$pkgdir" >/dev/null 2>&1
+}
+
+module_native_binding() {
+  CURRENT_MODULE="native binding"
+  local pkg="${PREFIX:-/data/data/com.termux/files/usr}/lib/node_modules/@deepseek-ai/dsh/node_modules/node-addon-require-builtin"
+  if [ ! -d "$pkg" ]; then
+    skip "node-addon-require-builtin not present (DSH tree missing?) — skipped"
+    return 0
+  fi
+  local dest="$pkg/build/napi/napi-v9-android-x64/require_builtin.node"
+  if [ -f "$dest" ] && _binding_loads "$pkg"; then
+    skip "android binding already present and functional"
+    return 0
+  fi
+
+  local arch
+  case "$(uname -m)" in
+    x86_64) arch="android-x64" ;;
+    aarch64|arm64) arch="android-arm64" ;;
+    *) die "unsupported arch $(uname -m) for the native binding — build it manually, see native/README.md" ;;
+  esac
+  rm -f "$dest" 2>/dev/null || true
+  ensure_dir "$(dirname "$dest")"
+
+  # 1. Prebuilt artifact from this repo (fast path; verified after download —
+  #    a wrong-arch/corrupt file fails dlopen and falls through to source).
+  local raw="${SYLVIA_RAW_BASE:-https://raw.githubusercontent.com/Ayrlin-Renata/Sylvia/main}"
+  local url="$raw/native/$arch/napi-v9/require_builtin.node"
+  note "fetching prebuilt binding: $url"
+  if curl -fsSL --connect-timeout 10 --max-time 60 -o "$dest.tmp" "$url" 2>/dev/null \
+     && [ -s "$dest.tmp" ]; then
+    mv "$dest.tmp" "$dest"
+    if _binding_loads "$pkg"; then
+      ok "android binding installed from prebuilt artifact ($arch)"
+      return 0
+    fi
+    warn "prebuilt binding did not load (wrong arch or corrupt) — falling back to a source build"
+    rm -f "$dest"
+  else
+    rm -f "$dest.tmp" 2>/dev/null || true
+    note "no prebuilt binding for $arch in the repo (yet) — building from source"
+  fi
+
+  # 2. Source build fallback (the upstream repo is the only other source).
+  if ! command -v clang >/dev/null 2>&1 || ! command -v make >/dev/null 2>&1; then
+    note "installing build toolchain (make clang)"
+    pkg install -y make clang >/dev/null 2>&1 || true
+  fi
+  command -v clang >/dev/null 2>&1 \
+    || die "clang missing and the prebuilt binding was unavailable — install it (pkg install make clang) and re-run"
+  command -v python >/dev/null 2>&1 \
+    || die "python missing (base packages should provide it) — node-gyp needs it"
+
+  local src="$SYLVIA_HOME/native-build/src"
+  local repo="${SYLVIA_NAB_REPO:-https://github.com/deepseek-ai/dsh-node-addon-require-builtin.git}"
+  rm -rf "$src"
+  git clone --depth 1 "$repo" "$src" || die "clone of $repo failed (network?) — no other binding source exists"
+  local nd="$src/packages/native"
+  [ -f "$nd/binding.gyp" ] || die "upstream repo layout changed — no binding.gyp under packages/native (see native/README.md)"
+  local gyp="$PREFIX/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js"
+  [ -f "$gyp" ] || die "npm's bundled node-gyp missing ($gyp) — npm is broken; pkg install nodejs-lts"
+  local blog="$SYLVIA_HOME/native-build/build.log"
+  (
+    cd "$nd" || exit 1
+    npm install --no-save --ignore-scripts --no-audit --no-fund node-addon-api >/dev/null 2>&1 || exit 1
+    export GYP_DEFINES="narb_product=require-builtin"
+    node "$gyp" rebuild --nodedir="$PREFIX"
+  ) > "$blog" 2>&1 || die "native binding build failed — see $blog. Last lines:
+$(tail -n 8 "$blog" 2>/dev/null || true)"
+  [ -f "$nd/build/Release/require_builtin.node" ] || die "build reported success but produced no artifact — see $blog"
+  cp "$nd/build/Release/require_builtin.node" "$dest" || die "could not place binding at $dest"
+  _binding_loads "$pkg" || die "built binding does not load — see $blog"
+  ok "android binding built from source ($arch) — contribute it: native/$arch/napi-v9/require_builtin.node"
+}
+
+# =============================================================================
 #  DSH AMBIENT DEPENDENCY SWEEP
 # =============================================================================
 # Ambient dependency sweep. The 0.1.0-train crisis this was born from: npm
@@ -1840,6 +1941,7 @@ module_preconditions
 module_base_packages
 module_dsh_cli
 module_dsh_patch
+module_native_binding
 module_ambient_deps
 module_sylvia_mcp
 module_sylvia_daemon

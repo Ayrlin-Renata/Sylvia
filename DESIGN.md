@@ -691,6 +691,34 @@ repair path retained), and cm-align understands the nested exact-pinned shape.
 Phase C is deferred to a user-driven full AVD wipe to prove the clean
 install end-to-end.
 
+### 17.5.4 Native binding gap — `node-addon-require-builtin` (found in that wipe test)
+
+The clean install booted into `host preparation failed: No usable native
+binding found for node-addon-require-builtin-android-x64 (auto)`. Facts:
+DSH 0.2.x hard-requires this addon to load Node's internal modules;
+upstream publishes platform packages for linux (gnu/musl × x64/arm64),
+darwin, and win32 — **no android variant exists (registry 404)** — and the
+main package ships neither source nor a postinstall (`files: [README, lib]`),
+so the loader's three strategies (optional-package / local-build nodeabi /
+local-build napi) all miss on Termux no matter how npm was invoked. Same
+class as sharp/koffi/node-pty: glibc-platform assumptions upstream.
+
+Fix (matches the "host built artifacts in the repo" direction): the addon's
+own repo has the C++ source (`packages/native/binding.gyp`), and a Termux
+build succeeds (clang + `$PREFIX` headers + bundled node-gyp,
+`GYP_DEFINES="narb_product=require-builtin"`, NAPI backend → 93 KB
+`require_builtin.node`, NAPI v9 = ABI-stable across Node versions). The
+binary is committed to this repo at `native/android-x64/napi-v9/` and
+`module_native_binding` (installer, right after `module_dsh_patch`) fetches
+it — **dlopen AND functional verified** (runs the exact
+`requireBuiltin("internal/modules/esm/loader")` call app-boot makes) — with
+an on-device source-build fallback (auto-installing make/clang) and a loud
+die otherwise; arm64 artifact pending the first phone run (its build log is
+`~/.sylvia/native-build/build.log`, contribution recipe in `native/README.md`).
+Adding the missing `-android-*` platform packages upstream is a report
+candidate alongside §16.3 Phase 4. Note the ambient sweep cannot catch this
+class: the addon only loads inside `boot()`, not at package import time.
+
 ## 18. AVD acceptance findings — on-device agent test pass (2026-10-17)
 
 An agent running INSIDE the AVD harness executed a structured test pass; its

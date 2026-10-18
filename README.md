@@ -106,7 +106,13 @@ re-run the same command.
    era, when registry-train packages imported helpers (`dsh-timeout`, `dsh-scope`,
    `cordis-plugin-group`, …) that nothing declared and every boot died with
    `plugin tree failed to load`; it must report clean on a healthy install. All of
-   it re-applies on re-run.
+   it re-applies on re-run. Finally the installer seeds the **Android native
+   binding** (`module_native_binding`): DSH 0.2.x boots through
+   `node-addon-require-builtin`, a native addon upstream ships for
+   linux/darwin/win but **not android** — it downloads the prebuilt NAPI
+   artifact from this repo's [`native/`](native/README.md) directory (one file
+   per arch, dlopen + functional verified) and falls back to an on-device source
+   build when no artifact exists yet.
 3. **`sylvia-mcp`** — the custom MCP server, source + `npm install` + a stdio handshake
    smoke-test that confirms all 9 tools register.
 4. **`sylvia-daemon`** — the control daemon (loopback HTTP API on `:3090`): network-state
@@ -451,6 +457,7 @@ with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those
 | Harness not running after a reboot | Termux:Boot autostart isn't active: install the app from F-Droid and **open it once** (the boot receiver registers on first launch), check the seeded script with `ls ~/.termux/boot/`, and re-run `install.sh` if it's missing. |
 | mitmproxy tools missing on first launch | The first `uvx` build is slow — check `~/.sylvia/.mitmproxy-mcp-warm.log`, then re-run `install.sh` (warm build and `patchelf` fixes are idempotent). Reload the MCP servers from the UI if they still don't appear. |
 | Boots into a wall of `plugin(s) failed to load … could not be resolved` (nearly every core plugin) | The registry published a newer DSH train that imports helpers the pinned CLI never declares (`Cannot find package '@deepseek-ai/dsh-timeout'` and friends in the boot log — npm never installs them because nothing declares them). Re-run `install.sh`: the ambient dependency sweep imports every package in the tree, installs each missing package at the matching version, and verifies the sweep is clean. |
+| Boot dies with `No usable native binding found for node-addon-require-builtin-android-x64` | Upstream publishes no android build of that binding (and no source in the package). Re-run `install.sh` — `module_native_binding` downloads the prebuilt artifact from this repo's `native/<arch>/` (dlopen + functional verified) or builds it on-device from upstream source (`native/README.md`), then restart the harness. |
 | Selecting a workspace appears to work, then the UI immediately deselects it (no error shown) | The click runs `session.create`, which must mount the `standard` agent preset; the server reply is `agent-preset-invalid … workflow-engine … waiting` and the client reverts silently. Same root cause as above: rc.8-train packages only *peer*-declare their workflow deps (`dsh-workflow`, `dsh-session-telemetry`), so npm never installs them. Re-run `install.sh` (the ambient sweep scans the CLI's nested tree) and restart the harness. |
 | Managed services (mDNS, rclone, …) stay paused long after wifi returns | By design: `resumeOnReconnect` is locked `false` — release is explicit (the gate fails closed and stays closed). Resume from the control panel or `POST http://127.0.0.1:3090/api/netgate/resume`. If the hold re-engages while the network looks fine, check `/api/network` — the daemon's own verdict is the source of truth it gated on. |
 
