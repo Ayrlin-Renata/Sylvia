@@ -89,6 +89,27 @@ export async function adbRun(cfg, runFn, args, opts = {}, spawnFn) {
 	return r;
 }
 
+/**
+ * Pick the serial for adb calls when none is configured. The Termux adb
+ * server often sees SEVERAL transports at once (an explicit 127.0.0.1:5555
+ * from sylvia-adb-connect PLUS mdns-discovered emulator-5554 for the same
+ * device), and bare `adb shell` then fails with "more than one
+ * device/emulator" — which used to silently collapse every adb tier into
+ * `tier0-denied`. Returns the first transport in `device` state, or null.
+ * Opt-in via cfg.adbAutoSerial (the daemon's config sets it; the explicit
+ * SYLVIA_ADB_SERIAL knob still wins).
+ */
+async function resolveSerial(cfg, runFn) {
+	if (cfg.adbSerial) return cfg.adbSerial;
+	const r = await runFn(cfg.adbPath, ["devices"], { timeoutMs: 8000 });
+	if (r.spawnError || r.code !== 0) return null;
+	for (const line of r.stdout.split(/\r?\n/).slice(1)) {
+		const m = line.match(/^(\S+)\s+(\S+)/);
+		if (m && m[2] === "device") return m[1];
+	}
+	return null;
+}
+
 const CELL_RE = /^(rmnet|ccmni|apn|wwan)/;
 const WIFI_RE = /^wlan/;
 
@@ -207,12 +228,15 @@ export async function detect(cfg, runFn = run, spawnFn = undefined) {
 
 	let route = parseIpRoute(r.stdout, r.stderr, r.code ?? 0);
 	let tier0 = "tier0"; // source prefix; "tier0-adb" when asked as adbd
+	// Serial for EVERY adb call below: explicit knob wins, else auto-pick the
+	// first live transport (a multi-transport server breaks bare adb calls).
+	const serial = cfg.adbAutoSerial ? await resolveSerial(cfg, runFn) : (cfg.adbSerial || null);
+	const serialArgs = serial ? ["-s", serial] : [];
 
 	// Netlink denied (Termux app uid): the verdict is UNKNOWN, not offline.
 	// Retry the identical query as adbd's identity — `shell` uid binds netlink
 	// fine (verified on the emulator).
 	if (route.denied && cfg.adbPath) {
-		const serialArgs = cfg.adbSerial ? ["-s", cfg.adbSerial] : [];
 		const rr = await adbRun(
 			cfg,
 			runFn,
@@ -244,7 +268,6 @@ export async function detect(cfg, runFn = run, spawnFn = undefined) {
 		// ...but when tier-0 was DENIED (not truly unreachable), Android's own
 		// connectivity service can still name the transport type.
 		if (route.denied && cfg.adbPath) {
-			const serialArgs = cfg.adbSerial ? ["-s", cfg.adbSerial] : [];
 			const conn = await adbRun(
 				cfg,
 				runFn,
@@ -281,7 +304,6 @@ export async function detect(cfg, runFn = run, spawnFn = undefined) {
 	let source = `${tier0}-inference`;
 
 	if (cfg.adbPath) {
-		const serialArgs = cfg.adbSerial ? ["-s", cfg.adbSerial] : [];
 		const np = await adbRun(cfg, runFn, [...serialArgs, "shell", "dumpsys", "netpolicy"], {
 			timeoutMs: cfg.adbTimeoutMs
 		}, spawnFn);

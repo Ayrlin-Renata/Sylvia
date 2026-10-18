@@ -39,6 +39,11 @@ export function loadConfig(env = process.env) {
 		// degrades to Tier-0 inference instead of failing.
 		adbPath: env.SYLVIA_ADB_PATH || "adb",
 		adbSerial: env.SYLVIA_ADB_SERIAL || "",
+		// Auto-pick the first live transport when no serial is set: the Termux
+		// server often shows TWO entries for one device (explicit loopback
+		// connect + mdns discovery), and bare `adb shell` then fails with
+		// "more than one device/emulator", collapsing every adb tier.
+		adbAutoSerial: bool(env.SYLVIA_ADB_AUTO_SERIAL, true),
 		adbHost: env.SYLVIA_ADB_HOST || "127.0.0.1",
 		adbPort: int(env.SYLVIA_ADB_PORT, 0), // 0 = don't force `adb connect`
 		adbTimeoutMs: int(env.SYLVIA_ADB_TIMEOUT_MS, 6000),

@@ -1220,16 +1220,30 @@ fi
 
 # --no-open: DSH's own auto-open fires BEFORE the plugin tree finishes
 # loading, so it pops a browser even when boot crashes. Open it ourselves
-# only once the server actually answers.
-( for i in \$(seq 1 60); do
+# from captured output instead:
+#   - 0.2.1+ serves token auth (bare / answers 401; the server prints a
+#     one-time http://.../?token= URL) → open THAT url.
+#   - older trains answer 200 directly → open the plain url.
+web_log="$SYLVIA_HOME/dsh-web.log"
+rm -f "\$web_log"
+node --expose-internals "$dsh_bin" web --port "\${SYLVIA_WEB_PORT:-3080}" --no-open >> "\$web_log" 2>&1 &
+web_pid=\$!
+( for i in \$(seq 1 90); do
+    tok=\$(grep -o 'http://127\.0\.0\.1:[0-9]*/?token=[A-Za-z0-9]*' "\$web_log" 2>/dev/null | head -n1 || true)
+    if [ -n "\$tok" ]; then
+      sleep 2   # let the plugin tree settle before the first page request
+      termux-open-url "\$tok" >/dev/null 2>&1 || true
+      exit 0
+    fi
     if curl -sf "http://127.0.0.1:\${SYLVIA_WEB_PORT:-3080}/" >/dev/null 2>&1; then
       termux-open-url "http://127.0.0.1:\${SYLVIA_WEB_PORT:-3080}" >/dev/null 2>&1 || true
       exit 0
     fi
+    kill -0 \$web_pid 2>/dev/null || exit 0
     sleep 1
   done ) >/dev/null 2>&1 &
-
-exec node --expose-internals "$dsh_bin" web --port "\${SYLVIA_WEB_PORT:-3080}" --no-open
+trap 'kill \$web_pid 2>/dev/null || true' INT TERM
+wait "\$web_pid"
 EOF
   chmod +x "$SYLVIA_HOME/start-sylvia.sh"
   ok "wrote $SYLVIA_HOME/start-sylvia.sh"

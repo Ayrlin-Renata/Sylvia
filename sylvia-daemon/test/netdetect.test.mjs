@@ -278,3 +278,30 @@ test("detect: adb bootstrap signature → nodaemon fallback spawns, command retr
 	assert.equal(s.metered, false, "netpolicy retry succeeded");
 	assert.equal(s.source, "tier0+netpolicy");
 });
+
+test("detect: multi-transport server → auto serial passed as -s (adbAutoSerial)", async () => {
+	// Fresh-install AVD shape: loopback connect + mdns discovery give TWO
+	// device entries; bare `adb shell` fails "more than one device/emulator"
+	// and used to collapse every adb tier into tier0-denied.
+	const runFn = seqRunFn({
+		"route get 1.1.1.1": DENIED,
+		"devices": { stdout: "List of devices attached\n127.0.0.1:5555\tdevice\nemulator-5554\tdevice\n" },
+		"-s 127.0.0.1:5555 shell ip route get 1.1.1.1": WIFI_ROUTE,
+		"-s 127.0.0.1:5555 shell dumpsys netpolicy": { stdout: "  mMeteredIfaces=[rmnet_data0]\n" }
+	});
+	const s = await detect({ ...baseCfg, adbAutoSerial: true }, runFn);
+	assert.equal(s.source, "tier0-adb+netpolicy", "adb tier worked because -s was applied");
+	assert.equal(s.transport, "wifi");
+	assert.equal(s.metered, false);
+});
+
+test("detect: adbAutoSerial off → no devices probe, legacy serialArgs behavior", async () => {
+	// Without the opt-in flag, nothing calls `devices` (this seqRunFn throws
+	// on unexpected commands, proving the probe is skipped).
+	const runFn = seqRunFn({
+		"route get 1.1.1.1": WIFI_ROUTE,
+		"shell dumpsys netpolicy": { stdout: "  mMeteredIfaces=[rmnet_data0]\n" }
+	});
+	const s = await detect(baseCfg, runFn);
+	assert.equal(s.source, "tier0+netpolicy");
+});
