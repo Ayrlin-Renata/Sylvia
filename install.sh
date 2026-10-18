@@ -5,7 +5,7 @@
 #  Installs, end to end:
 #    1. Termux base packages     nodejs-lts, git, bash, tmux, android-tools (adb), rclone, uv, nmap, iproute2, python
 #    2. DSH Mobile CLI           npm -g @deepseek-ai/dsh
-#    3. Mobile/Android patches   Ayrlin-Renata fork -> 12 local rc.7 tarballs
+#    3. Mobile/Android patches   Ayrlin-Renata fork -> CLI + 11 local target-train tarballs
 #    4. sylvia-mcp server        ADB loopback / Tasker XML / rclone JSON / network+resource+discovery
 #    5. sylvia-daemon            control API :3090, network detection, netgate, registry, discovery
 #    6. sylvia-bridge plugin     DSH harness gating (pause on metered / offline-gap context)
@@ -209,7 +209,7 @@ module_dsh_cli() {
   CURRENT_MODULE="DSH CLI"
 
   # The mobile patcher (module_dsh_patch) performs the REAL install: it does
-  # `npm install -g` with @deepseek-ai/dsh@rc.6 + 12 local tarballs in ONE call, so
+  # `npm install -g` with the CLI spec + all the fork's local tarballs in ONE call, so
   # arborist builds the whole tree atomically. Pre-installing DSH here is not just
   # redundant — it leaves a half-built --ignore-scripts tree that arborist then
   # crashes on ("Cannot read properties of null (reading 'children')") when the
@@ -243,13 +243,12 @@ module_dsh_cli() {
   ok "DSH CLI installed (standalone upstream)"
 }
 
-# npm resolves the CLI's ^0.1.0-rc.6 dependency ranges to the registry's NEWEST
-# prerelease (rc.8+ today) and NESTS those copies inside dsh/node_modules/
-# @deepseek-ai, where Node's resolver prefers them over the fork's patched
-# top-level rc.7 tarballs. Upstream rc.8 eagerly imports sharp/node-pty → hard
-# crash on Termux ("plugin tree failed to load"). The fork's own verifier only
-# checks TOP-LEVEL versions, so it cannot see this shadowing — prune the nested
-# copies so the patched packages win resolution.
+# npm can nest stock copies of packages inside the CLI's own node_modules
+# (it did this wildly on the old caret-ranged train, resolving to newer
+# prereleases; even the exact-pinned 0.2.1 train nests stock copies). Node's
+# resolver prefers those nested copies over the fork's patched TOP-LEVEL
+# tarballs, so the patches silently stop applying. Prune the nested copies so
+# the patched packages win resolution.
 _prune_nested_fork_copies() {
   local gmp="$1"; shift
   local nest="$gmp/dsh/node_modules/@deepseek-ai" sib pruned=0
@@ -261,59 +260,24 @@ _prune_nested_fork_copies() {
     fi
   done
   if [ "$pruned" -eq 1 ]; then
-    ok "pruned nested upstream copies of the fork packages (they shadowed the rc.7 patches)"
+    ok "pruned nested stock copies of the fork packages (they shadow the patched top-level tarballs)"
   fi
   return 0
 }
 
-# cordis-plugin-hmr 1.0.18+ REMOVED hmr.registerConfig() while dsh-app-boot
-# still calls it (dsh-app-boot/lib/index.js:767). The CLI declares the peer
-# "^1.0.16", so npm resolves the NEWEST publish (1.0.20) and boot dies with
-# "hmr.registerConfig is not a function" / "user patch-layer watching requires
-# the Cordis HMR service". 1.0.17 is the last version that has registerConfig
-# (verified against a known-working PC install). Pin the nested copy after
-# every install/repair of the CLI tree.
-_pin_hmr_17() {
-  local gmp="$1"
-  local hmr="$gmp/dsh/node_modules/@deepseek-ai/cordis-plugin-hmr"
-  local ver=""
-  [ -f "$hmr/package.json" ] && ver="$(node -p "require(process.argv[1]).version" "$hmr/package.json" 2>/dev/null || true)"
-  if [ "$ver" = "1.0.17" ]; then
-    skip "cordis-plugin-hmr already pinned to 1.0.17"
-    return 0
-  fi
-  note "pinning cordis-plugin-hmr to 1.0.17 (found ${ver:-missing}; 1.0.18+ removed registerConfig)"
-  local tmp tgz pkg
-  tmp="$(mktemp -d)" || die "mktemp -d failed"
-  if ! (cd "$tmp" && npm pack "@deepseek-ai/cordis-plugin-hmr@1.0.17" --silent >/dev/null 2>&1); then
-    rm -rf "$tmp"
-    die "npm pack @deepseek-ai/cordis-plugin-hmr@1.0.17 failed (network?) — without the pin boot dies on 'hmr.registerConfig is not a function'"
-  fi
-  tgz="$(printf '%s\n' "$tmp"/*.tgz)"
-  if [ ! -f "$tgz" ]; then rm -rf "$tmp"; die "npm pack produced no tarball for cordis-plugin-hmr@1.0.17"; fi
-  pkg="$tmp/pkg"
-  mkdir -p "$pkg"
-  tar -xzf "$tgz" -C "$pkg" --strip-components=1 || { rm -rf "$tmp"; die "could not extract $tgz"; }
-  [ "$(node -p "require(process.argv[1]).version" "$pkg/package.json" 2>/dev/null)" = "1.0.17" ] \
-    || { rm -rf "$tmp"; die "extracted cordis-plugin-hmr is not 1.0.17"; }
-  grep -q "registerConfig" "$pkg/lib/index.js" \
-    || { rm -rf "$tmp"; die "extracted cordis-plugin-hmr 1.0.17 lacks registerConfig"; }
-  rm -rf "$hmr"
-  mv "$pkg" "$hmr"
-  rm -rf "$tmp"
-  ok "cordis-plugin-hmr pinned to 1.0.17 (registerConfig present)"
-}
+# RETIRED at 0.2.1-alpha.5 (Phase B re-target): @deepseek-ai/cordis-plugin-hmr
+# no longer exists on the 0.2.1 train — HMR is @deepseek-ai/dsh-hmr, a normal
+# loader entry, and app-boot no longer calls registerConfig/watchUserPatches at
+# all. The 1.0.17 pin implementation is in git history (removed in the re-target
+# commit); installing it here would only plant a dead package.
 
-# The web frontend is NOT one of the fork's 12 tarballs, so npm resolves it to
-# the registry's newest prerelease (rc.8+) while the fork pins client-modules to
-# its local rc.7 tarball. rc.8's injectBootManifest injects the
-# window.__ModuleLoader__ facade IIFE + parser-preload <script> tags that the
-# rc.8 frontend REQUIRES ("web boot: window.__ModuleLoader__ bootstrap facade
-# is missing"); rc.7's tap injects only the __DSH_BOOT__ graph, so the UI dies
-# on load. The fork's own patch set predates the facade contract — and upstream
-# rc.8 already absorbed the fork's one CM change (cache-control: no-cache).
-# Align client-modules to whatever frontend version is actually installed
-# (paired publishing: they share the version). Idempotent; fail-fast.
+# Client-modules drift guard. On the 0.2.1-alpha.5 train the fork no longer
+# ships a client-modules tarball (stock is byte-equivalent to the old patch)
+# and the CLI's exact pin installs it NESTED — but the facade contract
+# (window.__ModuleLoader__ injection) still has to hold between whatever
+# client-modules is installed and the web frontend. This only acts when a
+# TOP-LEVEL copy drifts from the frontend (the rc.8-era drift class); the
+# nested exact-pinned copy is left alone. Idempotent; fail-fast.
 _align_client_modules_to_fe() {
   local gmp="$1"
   local fe="" fe_pkg cm_ver fe_ver
@@ -327,8 +291,13 @@ _align_client_modules_to_fe() {
     || die "could not read frontend version from $fe"
   [ -n "$fe_ver" ] || die "frontend version empty in $fe"
   cm_ver=""
-  [ -f "$gmp/dsh-client-modules/package.json" ] \
-    && cm_ver="$(node -p "require(process.argv[1]).version" "$gmp/dsh-client-modules/package.json" 2>/dev/null)"
+  if [ -f "$gmp/dsh-client-modules/package.json" ]; then
+    cm_ver="$(node -p "require(process.argv[1]).version" "$gmp/dsh-client-modules/package.json" 2>/dev/null)"
+  elif [ -f "$gmp/dsh/node_modules/@deepseek-ai/dsh-client-modules/package.json" ]; then
+    # Nested exact-pinned copy (the 0.2.1-train shape) — matches by construction.
+    skip "dsh-client-modules is nested (exact-pinned with the CLI, $fe_ver frontend)"
+    return 0
+  fi
   if [ "$cm_ver" = "$fe_ver" ]; then
     skip "dsh-client-modules already matches the frontend ($fe_ver)"
     return 0
@@ -344,30 +313,28 @@ _align_client_modules_to_fe() {
   ok "dsh-client-modules aligned to frontend $fe_ver (facade injection present)"
 }
 
-# The fork's dsh-attachment-local (frozen rc.7 tarball bytes) predates rc.8's
-# imageLimits contract: dsh-host-apiproxy validates the session.history
-# `imageLimits` projection with a schema REQUIRING maxImageDimension, so the
-# missing field kills chat history with "Failed to load history ...
-# maxImageDimension". Upgrading the package is NOT an option: the fork's rc.7
-# bytes carry Android-critical changes upstream lacks (lazy sharp loading —
-# sharp ships no Termux binary — and the FUSE hard-link fallback). Patch the
-# frozen baseline in place with just the added key (mirrors how the fork itself
-# ships modified files at the same version). Hash-guarded both ways: fork
-# baseline -> copy the repo's known-patched build over it; already patched ->
-# skip; anything else -> die (never clobber unknown bytes). The baseline never
-# changes (it is the fork's committed tarball), so the hashes are stable.
+# imageLimits.maxImageDimension verification. The rc.8-era contract: the
+# session.history projection REQUIRES maxImageDimension, so a dsh-attachment-
+# local without it kills chat history ("Failed to load history ..."). On the
+# 0.2.1-alpha.5 train this is upstream — verify it, do not patch it. The
+# legacy patch path stays only for repairing an old-train (rc.7 baseline)
+# install in place; its frozen-baseline hash never changes, so the guard is
+# stable. Anything that is neither the legacy baseline nor already-feature-
+# present is unknown bytes and must not be overwritten.
 _patch_attachment_local_image_dimension() {
   local gmp="$1"
   local target="$gmp/dsh-attachment-local/lib/index.js"
   [ -f "$target" ] || die "dsh-attachment-local missing ($target) — run the mobile-patch module first"
+  if grep -q "maxImageDimension" "$target"; then
+    skip "attachment-local provides imageLimits.maxImageDimension (upstream or previously patched)"
+    return 0
+  fi
   local md5_of='const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("md5").update(f.readFileSync(process.argv[1])).digest("hex"))'
-  local base=7571b9b552b7e642334a19aa00cd812f patched=4226721c65c4f3b25baa4e2d9661998f now
+  local base=7571b9b552b7e642334a19aa00cd812f now
   now="$(node -e "$md5_of" "$target")" || die "could not hash $target"
-  case "$now" in
-    "$patched") skip "attachment-local image-dimension patch already applied"; return 0 ;;
-    "$base") ;;
-    *) die "attachment-local lib/index.js has unexpected bytes ($now — expected baseline $base or patched $patched); refusing to overwrite" ;;
-  esac
+  if [ "$now" != "$base" ]; then
+    die "attachment-local lacks maxImageDimension and has unexpected bytes ($now — expected legacy baseline $base); refusing to overwrite unknown bytes"
+  fi
   local src="$SCRIPT_DIR/patches/attachment-local-rc7-index.js"
   if [ ! -f "$src" ]; then
     local repo_dir="$SYLVIA_HOME/repo"
@@ -384,74 +351,40 @@ _patch_attachment_local_image_dimension() {
   [ "$src_md5" = "$patched" ] || die "patch source has unexpected bytes ($src_md5, want $patched) — $src"
   cp "$src" "$target" || die "could not write $target"
   grep -q "maxImageDimension" "$target" || die "patched attachment-local lacks maxImageDimension after copy"
-  ok "attachment-local patched with imageLimits.maxImageDimension (rc.8 projection contract)"
+  ok "attachment-local patched with imageLimits.maxImageDimension (legacy rc.7 repair)"
 }
 
-# profile-boot does `await ctx.loader.create({name: "...cordis-plugin-hmr"})`
-# and then immediately calls watchUserPatches(), but the hmr SERVICE only
-# registers after its fiber settles: loader.create() returns while the entry
-# fiber is still state 1, ctx.get("hmr") stays undefined until state 2, so
-# watchUserPatches throws "user patch-layer watching requires the Cordis HMR
-# service" (reliably, on Termux). Insert an explicit fiber-settle wait between
-# the create call and watchUserPatches. Marker-guarded → idempotent.
-_patch_profile_boot_hmr_settle() {
-  local gmp="$1"
-  # lib/ holds BOTH a stable stub (profile-boot-<hash>.js re-exporting
-  # runProfile) and the content-hashed chunk that actually contains the boot
-  # code — select by content, never alphabetically (the stub sorts first and
-  # has no anchor). Patch EVERY anchor-bearing chunk: a later CLI reinstall
-  # can leave both a pristine and an already-patched chunk behind.
-  local f found=0 patched=0 marked=0
-  for f in "$gmp"/dsh/lib/profile-boot-*.js; do
-    [ -f "$f" ] || break
-    grep -q "cordis-plugin-hmr" "$f" || continue   # stubs reference the chunk instead
-    found=1
-    if grep -q "sylvia:await-hmr-settle" "$f"; then
-      marked=1
-      continue
-    fi
-    [ -f "$f.sylviabak" ] || cp "$f" "$f.sylviabak" || warn "could not back up $f"
-    node -e '
-      const fs = require("fs");
-      const f = process.argv[1];
-      let s = fs.readFileSync(f, "utf8");
-      const re = /await ctx\.loader\.create\(\{\s*name:\s*"@deepseek-ai\/cordis-plugin-hmr",\s*config:\s*\{\s*root:\s*\[\]\s*\}\s*\}\);/;
-      const m = s.match(re);
-      if (!m) { console.error("anchor not found: hmr loader.create call — dsh layout changed"); process.exit(2); }
-      const ins = "\n\t\t\t\t/* sylvia:await-hmr-settle */" +
-        "\n\t\t\t\t{" +
-        "\n\t\t\t\t\tconst he = Object.values(ctx.loader.store).find((e) => e && e.options && String(e.options.name).includes(\"cordis-plugin-hmr\"));" +
-        "\n\t\t\t\t\tif (he && he.fiber && he.fiber.await) await Promise.race([he.fiber.await().catch(() => {}), new Promise((r) => setTimeout(r, 10000))]);" +
-        "\n\t\t\t\t}";
-      fs.writeFileSync(f, s.replace(re, (mm) => mm + ins));
-    ' "$f" || die "could not patch $f (anchor not found — dsh layout changed; check profile-boot-*.js)"
-    grep -q "sylvia:await-hmr-settle" "$f" || die "profile-boot patch did not land in $f"
-    patched=1
-    ok "profile-boot awaits hmr fiber settle before watchUserPatches ($(basename "$f"))"
-  done
-  [ "$found" -eq 1 ] || die "no profile-boot-*.js under $gmp/dsh/lib contains cordis-plugin-hmr — dsh layout changed"
-  [ "$patched" -eq 1 ] || skip "profile-boot already awaits hmr fiber settle"
-}
+# RETIRED at 0.2.1-alpha.5 (Phase B re-target): the profile-boot →
+# watchUserPatches race needed a fiber-settle patch only because app-boot
+# loaded cordis-plugin-hmr and watched immediately. On the 0.2.1 train
+# watchUserPatches does not exist and HMR ships as a plain loader entry
+# (@deepseek-ai/dsh-hmr) — there is nothing to await and nothing that throws.
+# Implementation in git history; a patched-anchor search here would `die` on
+# every fresh install (the anchor is gone), which is why the function was
+# removed rather than left to its guards.
 
 # =============================================================================
-#  MODULE 4 — Mobile/Android patches (fork installer, 12 local rc.7 tarballs)
+#  MODULE 4 — Mobile/Android patches (CLI spec + the fork's local target-train tarballs)
 # =============================================================================
-# The fork's install.sh does `cd $(dirname $0)` and expects the 12 tarballs
-# beside it, so we clone the fork and run install/install.sh in place.
+# The fork repo carries the tarballs + its own install.sh; we clone it and
+# replicate that installer's spec-by-spec (see below), not run it directly.
 module_dsh_patch() {
   CURRENT_MODULE="DSH mobile patch"
 
-  # Idempotency canary — a COMPLETE install has the CLI at rc.6 AND all 12 rc.7
-  # sibling packages. Checking only one package (the old canary) is what left broken
-  # half-installs behind: a crash can leave dsh-client-ui-layout@rc.7 on disk while
-  # @deepseek-ai/dsh and the other siblings are missing, so the old canary said
-  # "done", returned early, and skipped BOTH the cleanup and the install — with no
-  # way to repair. Requiring every package means a partial install is always re-done.
+  # Target train. The FORK is the source of truth for the exact specs (the CLI
+  # spec + tarball version are read out of the fork's own install.sh below),
+  # but the idempotency canary needs a version to compare BEFORE the fork is
+  # cloned — and a stale clone from a previous train must never satisfy it.
+  # Bump SYLVIA_DSH_TARGET_VER when the fork moves trains.
+  local TARGET="${SYLVIA_DSH_TARGET_VER:-0.2.1-alpha.5}"
+  local fork_dir="$SYLVIA_HOME/dsh-mobile"
   local GMP="${PREFIX:-/data/data/com.termux/files/usr}/lib/node_modules/@deepseek-ai"
+  # The fork's 11 tarballs (client-modules intentionally absent: stock alpha.5
+  # is byte-equivalent, so the CLI's exact pin installs it nested).
   local dsh_siblings=(
     dsh-client-ui-layout dsh-subprocess-local dsh-terminal-bash dsh-sandbox
     dsh-sandbox-local dsh-fs-local dsh-session-persistence-jsonl
-    dsh-attachment-local dsh-host-directory-picker-native dsh-client-modules
+    dsh-attachment-local dsh-host-directory-picker-native
     dsh-host-directory-picker-browse dsh-client-ui-directory-picker-browse
   )
   local patch_ok=1 sib
@@ -461,23 +394,22 @@ module_dsh_patch() {
       [ -f "$GMP/$sib/package.json" ] || { patch_ok=0; break; }
     done
   fi
+  # Canary: every package present AND the layout canary at the TARGET train —
+  # any previous train (e.g. the rc.7 installs that predate the 0.2.1 re-target)
+  # forces the repair path below.
   if [ "$patch_ok" -eq 1 ] \
-     && node -e "process.exit(require(process.argv[1]).version==='0.1.0-rc.7'?0:1)" "$GMP/dsh-client-ui-layout/package.json"; then
-    # Even when the top-level tree is correct, npm may have nested NEWER
-    # upstream prereleases inside the CLI's own node_modules where they
-    # shadow the patches at resolution time — prune before trusting it.
+     && node -e "process.exit(require(process.argv[1]).version===process.argv[2]?0:1)" "$GMP/dsh-client-ui-layout/package.json" "$TARGET"; then
+    # Even when the top-level tree is correct, npm may have nested stock copies
+    # inside the CLI's own node_modules where they shadow the patched top-level
+    # packages at resolution time — prune before trusting it.
     _prune_nested_fork_copies "$GMP" "${dsh_siblings[@]}"
-    # Repair-only fixes for state an earlier (or partial) run can leave behind:
-    _pin_hmr_17 "$GMP"
-    _patch_profile_boot_hmr_settle "$GMP"
     _align_client_modules_to_fe "$GMP"
     _patch_attachment_local_image_dimension "$GMP"
-    skip "mobile patch already applied (CLI rc.6 + 12 rc.7 packages present)"
+    skip "mobile patch already applied (CLI + ${#dsh_siblings[@]} $TARGET packages present)"
     return 0
   fi
-  note "mobile patch incomplete or missing — repairing"
+  note "mobile patch incomplete or on a previous train — repairing"
 
-  local fork_dir="$SYLVIA_HOME/dsh-mobile"
   if [ ! -f "$fork_dir/install/install.sh" ]; then
     ensure_dir "$SYLVIA_HOME"
     note "cloning DSH fork: $SYLVIA_DSH_REPO"
@@ -485,6 +417,18 @@ module_dsh_patch() {
     git clone --depth 1 "$SYLVIA_DSH_REPO" "$fork_dir" || die "git clone of DSH fork failed ($SYLVIA_DSH_REPO)"
   else
     skip "fork already cloned ($fork_dir)"
+  fi
+
+  # A clone from a PREVIOUS train must not be reused — its tarballs would
+  # silently reinstall the old train. Refresh when its pinned tarball version
+  # no longer matches the target.
+  local fork_pin
+  fork_pin="$(grep -oE 'deepseek-ai-dsh-client-ui-layout-[0-9][0-9a-zA-Z.-]*\.tgz' "$fork_dir/install/install.sh" 2>/dev/null | head -n1 || true)"
+  fork_pin="${fork_pin#deepseek-ai-dsh-client-ui-layout-}"; fork_pin="${fork_pin%.tgz}"
+  if [ "$fork_pin" != "$TARGET" ]; then
+    note "fork clone pins '${fork_pin:-unknown}' (target $TARGET) — re-cloning"
+    rm -rf "$fork_dir"
+    git clone --depth 1 "$SYLVIA_DSH_REPO" "$fork_dir" || die "git clone of DSH fork failed ($SYLVIA_DSH_REPO)"
   fi
 
   # Clear any half-built global DSH tree + npm's global lock first, so arborist
@@ -495,19 +439,19 @@ module_dsh_patch() {
          "${PREFIX:-/data/data/com.termux/files/usr}/bin/dsh" 2>/dev/null || true
   rm -f "${PREFIX:-/data/data/com.termux/files/usr}/lib/node_modules/.package-lock.json" 2>/dev/null || true
 
-  # The fork's install.sh issues ONE `npm install -g` with all 13 specs at once.
+  # The fork's install.sh issues ONE `npm install -g` with all its specs at once.
   # Under npm 11 that single multi-spec command reliably crashes arborist's
   # ideal-tree builder: "Cannot read properties of null (reading 'children')".
   # A one-package-per-invocation install never enters that code path, so we
   # replicate the patcher here spec-by-spec instead of calling it. The specs are
-  # identical (CLI @deepseek-ai/dsh@0.1.0-rc.6 from the registry + the 12 local
-  # rc.7 tarballs beside it), so the result is byte-for-byte the same install.
+  # identical (the CLI registry spec + the fork's local tarballs beside it), so
+  # the result is the same install.
   #
   # npm_config_ignore_scripts=1 skips the native-addon builds (koffi/sharp/node-pty).
   # Those ALWAYS fail on Termux — their loaders key off process.platform ("linux", not
   # "android"), grab the glibc default .node, cannot dlopen it on bionic, and fall back
-  # to a from-source build needing CMake (absent). The rc.7 packages already make these
-  # optional/lazy, so nothing downstream needs them compiled.
+  # to a from-source build needing CMake (absent). The fork tarballs declare these
+  # addons optional (and lazy at runtime), so nothing downstream needs them compiled.
   local inst_dir="$fork_dir/install"
 
   # Read the fork's PINNED versions out of its own install.sh so a fork version bump
@@ -520,7 +464,8 @@ module_dsh_patch() {
   hits="$(grep -oE 'deepseek-ai-dsh-client-ui-layout-[0-9][0-9a-zA-Z.-]*\.tgz' "$inst_dir/install.sh" || true)"
   hits="${hits%%$'\n'*}"
   tgz_ver="${hits#deepseek-ai-dsh-client-ui-layout-}"; tgz_ver="${tgz_ver%.tgz}"
-  [ -n "$tgz_ver" ] || die "could not read the rc tarball version from $inst_dir/install.sh"
+  [ -n "$tgz_ver" ] || die "could not read the tarball version from $inst_dir/install.sh"
+  [ "$tgz_ver" = "$TARGET" ] || die "fork install.sh pins $tgz_ver but SYLVIA_DSH_TARGET_VER=$TARGET — the fork moved trains; bump SYLVIA_DSH_TARGET_VER to match"
 
   # (installed dir under @deepseek-ai, install spec) — one entry per package, so the
   # post-install check never has to parse a name out of a spec (that parsing is what
@@ -532,7 +477,7 @@ module_dsh_patch() {
   done
 
   local i
-  note "installing $cli_spec + ${#dsh_siblings[@]} local rc.7 tarballs (one npm call each)"
+  note "installing $cli_spec + ${#dsh_siblings[@]} local $tgz_ver tarballs (one npm call each)"
   for i in "${!specs[@]}"; do
     # Only the LOCAL tarball specs are file paths — the CLI spec (specs[0]) is a
     # registry spec ("@deepseek-ai/dsh@x.y.z") that npm resolves from the network,
@@ -544,8 +489,8 @@ module_dsh_patch() {
         ;;
     esac
     # npm's exit code can be non-zero purely because an OPTIONAL native-addon build
-    # script failed (koffi/sharp/node-pty) — expected and harmless on Termux, since the
-    # rc.7 packages make those addons lazy. So don't trust the exit code: install
+    # script failed (koffi/sharp/node-pty) — expected and harmless on Termux, since
+    # the tarballs make those addons optional. So don't trust the exit code: install
     # best-effort, then verify the package actually landed on disk.
     npm_config_ignore_scripts=1 npm install --global "${specs[$i]}" >/dev/null 2>&1 || true
     if [ ! -f "$GMP/${dirs[$i]}/package.json" ]; then
@@ -566,34 +511,29 @@ module_dsh_patch() {
     [ -f "$GMP/$sib2/package.json" ] \
       || die "after installing all specs, $GMP/$sib2/package.json is still missing — re-run to repair."
   done
-  # npm nests its own newest-prerelease copies of the fork packages inside the
-  # CLI's tree during a fresh install too — prune before declaring success.
+  # npm nests its own stock copies of the fork packages inside the CLI's tree
+  # during a fresh install too — prune before declaring success.
   _prune_nested_fork_copies "$GMP" "${dsh_siblings[@]}"
-  # A fresh install pulls the newest cordis-plugin-hmr (no registerConfig) and
-  # a pristine profile-boot (no fiber-settle wait) — apply both boot fixes.
-  _pin_hmr_17 "$GMP"
-  _patch_profile_boot_hmr_settle "$GMP"
-  # The fork's rc.7 client-modules tarball predates the __ModuleLoader__ facade
-  # the current frontend requires — re-align after the tarball install above.
+  # Drift guards (no-ops on a healthy exact-pinned install).
   _align_client_modules_to_fe "$GMP"
-  # The fork's rc.7 attachment-local predates rc.8's imageLimits contract —
-  # patch the added key (Android-critical fork changes must be preserved).
   _patch_attachment_local_image_dimension "$GMP"
-  ok "mobile/Android patches applied (CLI rc.6 + 12 rc.7 packages)"
+  ok "mobile/Android patches applied ($cli_spec + ${#dsh_siblings[@]} $tgz_ver packages)"
 }
 
 # =============================================================================
 #  DSH AMBIENT DEPENDENCY SWEEP
 # =============================================================================
-# The fork pins the CLI at 0.1.0-rc.6, but npm resolves the CLI's caret-ranged
-# transitive deps (dsh/node_modules/@deepseek-ai/*) to whatever is newest on
-# the registry — currently the 0.1.0-rc.8 train. Those rc.8 packages import
-# "ambient" helper packages (cordis-plugin-group, dsh-timeout, dsh-scope,
-# dsh-atomic-write, dsh-compaction, …) that NEITHER they NOR the rc.6 CLI
-# declare in their package.json, so npm never installs them and every boot
-# dies with a wall of "plugin(s) failed to load / could not be resolved".
-# (Devices whose tree predates the rc.8 train never showed this; fresh
-# installs hit it every time.)
+# Ambient dependency sweep. The 0.1.0-train crisis this was born from: npm
+# resolved the CLI's caret-ranged deps to a newer prerelease train whose
+# packages imported helpers (dsh-timeout, dsh-scope, cordis-plugin-group,
+# dsh-atomic-write, dsh-compaction, …) that NEITHER they NOR the CLI declared
+# (some only as peerDependencies), so npm never installed them and every boot
+# died with "plugin tree failed to load". The 0.2.1 train exact-pins every
+# dsh-* dependency, so this class should be gone — the sweep stays as a
+# regression detector (it must report clean on a healthy install). It also
+# still catches a hand-edited tree or a future train that reintroduces the
+# pattern. Read-only when nothing is missing, so a re-run is a fast
+# verification pass.
 #
 # Fix: sweep every @deepseek-ai package in the global tree, import its entry
 # point directly, and collect "Cannot find (package|module)" errors. Missing

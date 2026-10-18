@@ -84,25 +84,29 @@ re-run the same command.
    install**, see §1).
 2. **DSH CLI + mobile/Android patches** — clones your
    [`Ayrlin-Renata/Deepseek-harness-mobile`](https://github.com/Ayrlin-Renata/Deepseek-harness-mobile)
-   fork, then installs the CLI (`@deepseek-ai/dsh`) and overlays the 12 local `rc.7`
-   packages (mobile single-column shell, optional native addons, filesystem fallbacks,
-   directory-picker timeout + retry, plugin-bundle caching) — **one npm install per
-   package**, because npm's multi-spec install crashes its dependency-tree builder on
-   this set (a package with 8 peer deps; `--legacy-peer-deps` retries just that one).
-   It then applies the fixes the harness needs to boot on Termux: prunes newer npm
-   copies of those same fork packages that get shadowed *inside* the CLI's tree,
-   pins `cordis-plugin-hmr` to `1.0.17` (1.0.18+ dropped an API DSH's boot still
-   calls), waits for the HMR service to settle before patch-watching, and symlinks
-   the `sylvia-bridge` plugin's `@deepseek-ai/*` deps. It also aligns
-   `dsh-client-modules` to the installed web-frontend version (the frontend
-   isn't one of the fork's tarballs, so npm resolves it to a newer rc than the
-   fork pins — only rc.8+ client-modules inject the `window.__ModuleLoader__`
-   facade that the rc.8+ frontend requires at boot), and it patches the fork's
-   frozen `dsh-attachment-local` (rc.7) bytes with the `maxImageDimension` key
-   that rc.8's `session.history` image-limits projection requires — in place,
-   preserving the fork's Android-critical changes (lazy sharp loading for
-   Termux, the FUSE hard-link fallback). Finally it runs an **ambient dependency sweep** — the newest registry train's packages import helpers (`cordis-plugin-group`, `dsh-timeout`, `dsh-scope`, ...) that neither they nor the pinned `rc.6` CLI declare, so npm never installs them and every boot would die with `plugin tree failed to load`; the installer imports every package in the tree, installs whatever is missing at the matching version, and repeats until clean. All of it re-applies
-   re-run.
+   fork, then installs the CLI (`@deepseek-ai/dsh`, exact-pinned) and overlays the
+   fork's 11 local tarballs: the mobile single-column shell (`MobileFrame`), the
+   FUSE/sdcardfs hardlink→copy filesystem fallbacks, native addons moved to
+   `optionalDependencies` so npm never dies on glibc-only binaries, directory-listing
+   timeouts with failed-listing retry, Termux `$PREFIX` shell resolution, and the
+   Android sandbox-backend message — **one npm install per package**, because npm's
+   multi-spec install crashes its dependency-tree builder on this set. Spec versions
+   are read out of the fork's own `install.sh` and cross-checked against
+   `SYLVIA_DSH_TARGET_VER` (default `0.2.1-alpha.5` — the PC harness's train); a
+   clone from an older train is detected and re-cloned automatically. Then the
+   boot-time fixes: prunes the *stock* npm copies of the fork packages that get
+   nested inside the CLI's tree (they would shadow the patched tarballs), symlinks
+   the `sylvia-bridge` plugin's `@deepseek-ai/*` deps, verifies
+   `dsh-client-modules` matches the web frontend (the `window.__ModuleLoader__`
+   facade contract — a drift guard, a no-op on the exact-pinned train), and verifies
+   `dsh-attachment-local` provides `maxImageDimension` (the `session.history`
+   image-limits contract; upstream on this train — the installer checks rather than
+   patches, with a legacy repair path for old installs). Finally it runs an
+   **ambient dependency sweep** — a regression detector born from the pre-0.2.1
+   era, when registry-train packages imported helpers (`dsh-timeout`, `dsh-scope`,
+   `cordis-plugin-group`, …) that nothing declared and every boot died with
+   `plugin tree failed to load`; it must report clean on a healthy install. All of
+   it re-applies on re-run.
 3. **`sylvia-mcp`** — the custom MCP server, source + `npm install` + a stdio handshake
    smoke-test that confirms all 9 tools register.
 4. **`sylvia-daemon`** — the control daemon (loopback HTTP API on `:3090`): network-state
@@ -440,9 +444,9 @@ with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those
 | Bridge plugin not loading | Check `grep -n "sylvia-bridge" ~/.dsh/profiles/web/cordis.patch.yml`. Verify the symlink: `ls -la ~/.dsh/profiles/web/node_modules/sylvia-bridge`. |
 | Tasker reload intent not firing | Verify the broadcast action string against your Tasker build in the emulator Logcat. |
 | Discovery scan refuses | It refuses on metered/offline networks. Check network state via `mcp__sylvia__network_state`. |
-| Harness dies with `plugin tree failed to load` or `user patch-layer watching requires the Cordis HMR service` | Upstream npm drift inside the CLI's tree — re-run `install.sh`. The prune, the `cordis-plugin-hmr@1.0.17` pin, and the boot patch are all marker-guarded, so they re-apply cleanly. |
+| Harness dies with `plugin tree failed to load` | Upstream npm drift inside the CLI's tree — nested *stock* copies of the fork packages shadowing the patched tarballs, or a half-finished install. Re-run `install.sh`: the version canary forces a repair, stale fork clones are re-cloned, and the prune + drift guards are feature-guarded so they re-apply cleanly. (The old `Cordis HMR service` wording in this row belonged to the pre-0.2.1 train and is retired.) |
 | Browser shows `Failed to load plugins / web boot: window.__ModuleLoader__ bootstrap facade is missing` | Version skew between the npm-resolved web frontend (rc.8+) and the fork-pinned `dsh-client-modules` (rc.7, predates the facade). Re-run `install.sh` — it aligns `dsh-client-modules` to the frontend version — then hard-refresh the page (Ctrl+F5). |
-| Chat fails with `Failed to load history … maxImageDimension … expected number, received undefined` | The fork's `dsh-attachment-local` (rc.7) predates the rc.8 image-limits projection contract. Re-run `install.sh` — it hash-guard-patches the frozen package bytes with the missing key (keeping the fork's Android fixes) — then reload the session. |
+| Chat fails with `Failed to load history … maxImageDimension … expected number, received undefined` | `dsh-attachment-local` is missing the `maxImageDimension` key the image-limits projection requires. On the current train the fork tarball carries it upstream — re-run `install.sh`, which *verifies* the feature (and repairs legacy old-train installs in place, keeping the Android fixes), then reload the session. |
 | `EADDRINUSE … 3080` at launch | A previous harness instance is still running — kill the stale `node … bin.js web` process and relaunch. |
 | Harness not running after a reboot | Termux:Boot autostart isn't active: install the app from F-Droid and **open it once** (the boot receiver registers on first launch), check the seeded script with `ls ~/.termux/boot/`, and re-run `install.sh` if it's missing. |
 | mitmproxy tools missing on first launch | The first `uvx` build is slow — check `~/.sylvia/.mitmproxy-mcp-warm.log`, then re-run `install.sh` (warm build and `patchelf` fixes are idempotent). Reload the MCP servers from the UI if they still don't appear. |
