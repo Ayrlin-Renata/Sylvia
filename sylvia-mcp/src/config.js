@@ -39,6 +39,9 @@ export function loadConfig(env = process.env) {
 		taskerReloadAction: env.SYLVIA_TASKER_RELOAD_ACTION || "net.dinglisch.android.tasker.RELOAD_VARIABLES",
 		// Optional explicit component (pkg/.Receiver) for the reload broadcast.
 		taskerReloadComponent: env.SYLVIA_TASKER_RELOAD_COMPONENT || "",
+		// Package name checked via `pm path` before write+reload claims success
+		// (am broadcast exits 0 even with zero receivers — a silent false-success).
+		taskerPackage: env.SYLVIA_TASKER_PACKAGE || "net.dinglisch.android.tasker",
 
 		// --- rclone -------------------------------------------------------
 		rclonePath: env.SYLVIA_RCLONE_PATH || "rclone",

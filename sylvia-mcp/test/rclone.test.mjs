@@ -33,5 +33,11 @@ assert.ok(!r.json.includes("--json"), "does not append --json to --help");
 // 4. rejects empty args.
 await assert.rejects(() => rcloneJson(cfg, []), /non-empty/, "rejects empty args");
 
+// 5. `version` is a subcommand that rejects --json outright ("unknown flag",
+// exit 2 on real rclone) — the wrapper must not append it there.
+r = await rcloneJson(cfg, [printer, "version"]);
+assert.equal(r.exitCode, 0, "exit 0 for version");
+assert.ok(!r.json.includes("--json"), "does not append --json to the version subcommand");
+
 await rm(dir, { recursive: true, force: true });
-console.log("rclone: OK (json append / dedup / help / validation)");
+console.log("rclone: OK (json append / dedup / help / version / validation)");

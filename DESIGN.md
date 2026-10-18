@@ -595,3 +595,58 @@ landed upstream and must survive any rebuild. (An earlier note claiming these we
 4. Upstream reports still worth filing (§16.3 Phase 4), adjusted: hmr pin is
    obsolete as a report (package replaced); the `latest`-tag-parked-at-`0.0.1-rc.1`
    oddity and the immutable-cache default are worth noting upstream.
+
+## 18. AVD acceptance findings — on-device agent test pass (2026-10-17)
+
+An agent running INSIDE the AVD harness executed a structured test pass; its
+report drove six defect fixes, all verified live and covered by tests
+(dsh-mcp 12/12, dsh-daemon 99/99 at the time of writing).
+
+1. **Tier-0 netlink denial (the headline).** From the Termux uid (SELinux
+   `runas_app`), `ip route get` fails with `Cannot bind netlink socket:
+   Permission denied` — previously collapsed into "unreachable" → transport
+   `none` → netgate held `offline` since boot, permanently inert. Now
+   `parseIpRoute` returns a third verdict, `denied`, and `detect()` falls
+   through: retry the identical query as adbd's identity (`tier0-adb`), then
+   Android's own `dumpsys connectivity` type (`tier1-connectivity`), and only
+   then fail closed with `source: "tier0-denied"`. Live: `wifi/wlan0
+   validated via tier0-adb+connectivity`; `svc wifi disable` flips the verdict
+   within one 20s poll and recovery re-flips it back.
+2. **Frozen `/api/network`.** The watcher only replaced `lastState` on
+   transport/metered transitions, so `at` stayed at boot time while
+   `netstate.json` was fresh. `lastState` now refreshes every tick (change
+   detection still drives the log lines). Verified across a poll interval.
+3. **adb cannot bootstrap from this uid.** When the client auto-start fails
+   with `ADB server didn't ACK / cannot open /tmp/adb.<uid>.log` (root `/tmp`
+   is shell-owned), both `AdbManager.devices()` (sylvia-mcp) and
+   `netdetect.adbRun` (daemon) now detect the signature, spawn
+   `adb -L tcp:5037 nodaemon server start` detached (logs to stderr, skips
+   `/tmp`), and retry once. Observed nuance: on the current AVD image the plain
+   auto-start *does* succeed from a truly cold state (zero servers) — the
+   `/tmp` failure is condition-dependent — so the fallback is a guaranteed
+   safety net rather than the everyday path. Cold-start from zero servers and
+   the full `resolveAndConnect → exec` chain were both verified.
+4. **Tasker false-success.** `am broadcast` exits 0 with zero receivers, so a
+   Tasker-less device reported success. `tasker_write_and_reload` now runs
+   `pm path <package>` first: absent + `reload` → structured refusal before
+   any write; absent + `reload:false` → staged file with an honest warning and
+   `taskerPresent:false`. Package name is `SYLVIA_TASKER_PACKAGE`.
+5. **mdns restart storm.** `behavior:"always"` + instant `on.sh` failure
+   respawned 356× in 105 minutes, `lastError` never set (nobody waited on the
+   detached child). Now `start()` attaches an `exit` listener (captures the
+   code) and stamps `exitedAt` — the REAL death time, because checkRestarts
+   only observes 30s later. Deaths <10s after start count as a crash streak:
+   first death restarts immediately, then exponential backoff (base 60s,
+   cap 15min) with `lastError` surfacing in `/api/modules`. A death after a
+   healthy 30s stretch resets the streak. Live log: `died (exit 1) ~0s` →
+   `backing off 60s` → `backoff expired` → `backing off 120s`.
+6. **`rclone_exec version` rejected `--json`.** `version`/`help` are excluded
+   by command name (first bare word), plus a self-healing rerun-without-`--json`
+   on `unknown flag: --json`. Live: exit 0.
+
+Policy note (unchanged, confirmed intentional): `resumeOnReconnect` stays
+locked `false` — release is explicit (§2.1). With truthful detection, a hold
+now engages on real metered/none and requires a control-panel resume; on this
+emulator wifi-off lands on ethernet (`other`, unmetered by §2 inference), so
+the gate staying open is correct for the AVD but will HOLD on a phone's
+cellular fallback.

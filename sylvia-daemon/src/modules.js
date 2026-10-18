@@ -190,13 +190,31 @@ export class ModuleManager {
 		// ensure settings.env exists before the service starts (settings-edit.sh contract)
 		await this._writeEnv(mod);
 		const [sc, sa] = this._scriptCommand(this._scriptPath(mod, rel));
-		const { pid } = this.spawnFn(sc, sa, {
+		const child = this.spawnFn(sc, sa, {
 			cwd: mod.dir,
 			detached: true // own process group on POSIX → netgate SIGSTOP target (§2.3)
 		});
+		const pid = child && child.pid;
+		// Record on.sh's exit code (detached children aren't waitable, but the
+		// child object emits "exit") so checkRestarts can surface WHY the
+		// service keeps dying instead of a blind respawn storm.
+		if (child && typeof child.on === "function") {
+			child.on("exit", (code) => {
+				const cur = this.runtime.get(id);
+				if (cur && cur.pid === pid) {
+					cur.lastExitCode = code ?? null;
+					// Stamp the REAL death time: checkRestarts only observes on
+					// its next pass (30s later), so observation-based uptime
+					// would classify every instant crash as a long-lived death.
+					cur.exitedAt = Date.now();
+				}
+			});
+		}
 		rt.pid = pid;
 		rt.startedAt = Date.now();
 		rt.lastError = null;
+		rt.lastExitCode = null;
+		rt.exitedAt = null;
 		this.runtime.set(id, rt);
 
 		if (mod.manifest.behavior === "always" && this.netgate && pid) {
@@ -357,19 +375,77 @@ export class ModuleManager {
 	}
 
 	// Auto-restart pass for behavior=always modules whose process died (§9.4).
+	// Crash-loop protection: a service that dies within RAPID_MS of every
+	// start (e.g. `on.sh` exits instantly because a dependency is missing)
+	// gets exponential backoff instead of a per-cycle respawn storm — the
+	// AVD saw 356 respawns in 105 minutes of a missing mdns daemon before
+	// this guard existed. A death after a healthy stretch resets the streak,
+	// and lastError records the exit code for the control panel.
 	async checkRestarts() {
+		const RAPID_MS = 10_000;
+		const now = Date.now();
 		for (const [id, mod] of this.modules) {
 			if (mod.manifest.behavior !== "always") continue;
 			const rt = this.runtime.get(id);
-			if (rt && rt.pid && !this._alive(rt.pid)) {
-				this.log?.(`module ${id} (always) died — restarting`);
-				rt.pid = null;
+			if (!rt || !rt.pid) continue;
+			if (this._alive(rt.pid)) {
+				// Survived a healthy stretch → clear any crash-loop state.
+				if (rt.deathStreak && rt.startedAt && now - rt.startedAt > 30_000) {
+					rt.deathStreak = 0;
+					rt.backoffUntil = null;
+				}
+				continue;
+			}
+
+			// Dead. Honor an active backoff window; restart when it expires.
+			if (rt.backoffUntil && now < rt.backoffUntil) continue;
+			if (rt.backoffUntil) {
+				rt.backoffUntil = null;
+				this.log?.(`module ${id} (always) backoff expired — restarting`);
 				try {
 					await this.start(id);
 				} catch (e) {
 					rt.lastError = e.message;
 					this.log?.(`restart ${id} failed: ${e.message}`);
 				}
+				continue;
+			}
+
+			// Classify the death. Prefer the exit-event timestamp (real death
+			// time); fall back to observation-window uptime when the spawn
+			// didn't give us an exit-capable child (tests, odd platforms).
+			const diedAt = rt.exitedAt ?? null;
+			const uptimeMs = diedAt !== null && rt.startedAt ? diedAt - rt.startedAt
+				: rt.startedAt ? now - rt.startedAt : null;
+			const rapid = uptimeMs !== null && uptimeMs < RAPID_MS;
+			const exitNote =
+				rt.lastExitCode !== null && rt.lastExitCode !== undefined ? ` (exit ${rt.lastExitCode})` : "";
+
+			if (rapid) {
+				rt.deathStreak = (rt.deathStreak ?? 0) + 1;
+				rt.lastError = `died ~${Math.round(uptimeMs / 1000)}s after start${exitNote} — death streak ${rt.deathStreak}`;
+				if (rt.deathStreak >= 2) {
+					// Base 60s so the retry cadence is visible (the old storm
+					// was one respawn per 30s pass); cap at 15 minutes.
+					const delay = Math.min(60_000 * 2 ** (rt.deathStreak - 2), 15 * 60_000);
+					rt.backoffUntil = now + delay;
+					// pid stays (dead) as the liveness marker; the expired-window
+					// branch above performs the actual retry.
+					this.log?.(
+						`module ${id} (always) died ${rt.deathStreak}× within ${RAPID_MS / 1000}s of start${exitNote} — backing off ${Math.round(delay / 1000)}s`
+					);
+					continue;
+				}
+				this.log?.(`module ${id} (always) died${exitNote} ~${Math.round(uptimeMs / 1000)}s after start — restarting`);
+			} else {
+				rt.deathStreak = 0;
+				this.log?.(`module ${id} (always) died${exitNote} — restarting`);
+			}
+			try {
+				await this.start(id);
+			} catch (e) {
+				rt.lastError = e.message;
+				this.log?.(`restart ${id} failed: ${e.message}`);
 			}
 		}
 	}

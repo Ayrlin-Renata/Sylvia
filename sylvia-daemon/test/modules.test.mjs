@@ -400,3 +400,50 @@ test("checkRestarts: dead always-module restarts; manual module untouched", asyn
 
 	await rm(root, { recursive: true, force: true });
 });
+
+test("checkRestarts: crash-looping always-module backs off instead of respawning every cycle", async () => {
+	// AVD finding: missing mdns daemon → on.sh exits instantly → 356
+	// respawns in 105 minutes. Rapid repeated deaths must back off.
+	const root = path.join(await mkdtemp(path.join(tmpdir(), "sylvia-mods-")), "mods");
+	await makeModulesDirIn(root, "alwaysy", { ...baseManifest, id: "alwaysy", behavior: "always" });
+
+	const pids = new Set();
+	let nextPid = 7000;
+	const spawnFn = () => { const pid = ++nextPid; pids.add(pid); return { pid }; };
+	const logs = [];
+	const mgr = new ModuleManager({
+		modulesDir: root, store: null, netgate: null,
+		log: (...a) => logs.push(a.join(" ")),
+		exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+		spawnFn, killFn: fakeKill(pids)
+	});
+	await mgr.discover();
+	await mgr.start("alwaysy");
+	const pid1 = (await mgr.list()).find((m) => m.id === "alwaysy").pid;
+
+	// Death 1 (rapid) → immediate restart, streak = 1.
+	pids.delete(pid1);
+	await mgr.checkRestarts();
+	const pid2 = (await mgr.list()).find((m) => m.id === "alwaysy").pid;
+	assert.notEqual(pid2, pid1, "first rapid death restarts immediately");
+
+	// Death 2 (rapid) → streak = 2 → backoff engages, NO restart.
+	pids.delete(pid2);
+	await mgr.checkRestarts();
+	let mod = (await mgr.list()).find((m) => m.id === "alwaysy");
+	assert.equal(mod.running, false, "no restart while backing off");
+	assert.ok(mod.lastError, "lastError surfaces the crash loop");
+	assert.ok(logs.some((l) => /backing off/.test(l)), "backoff logged");
+
+	// Within the backoff window → still untouched.
+	await mgr.checkRestarts();
+	assert.equal((await mgr.list()).find((m) => m.id === "alwaysy").running, false, "still waiting out the window");
+
+	// Expire the window manually → the next pass restarts.
+	mgr.runtime.get("alwaysy").backoffUntil = Date.now() - 1;
+	await mgr.checkRestarts();
+	mod = (await mgr.list()).find((m) => m.id === "alwaysy");
+	assert.equal(mod.running, true, "restart after backoff expiry");
+
+	await rm(root, { recursive: true, force: true });
+});

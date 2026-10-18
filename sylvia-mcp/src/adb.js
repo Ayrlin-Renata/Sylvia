@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { run } from "./run.js";
 import { log } from "./log.js";
 
@@ -15,6 +16,13 @@ const DROP_PATTERNS = [
 	/unable to connect/i,
 	/protocol fault/i
 ];
+
+// The adb client auto-starts its server by daemonizing, and that server
+// writes /tmp/adb.<uid>.log before ACKing — but on Termux /tmp is
+// shell-owned, so the server dies and every client command fails with
+// "ADB server didn't ACK". The nodaemon form logs to stderr instead and
+// starts fine, so we bootstrap with it and retry.
+const BOOT_SIG = /ADB server didn't ACK|failed to start daemon|cannot open \/tmp\/adb/i;
 
 function looksLikeDrop(result) {
 	const blob = `${result.stdout}\n${result.stderr}`;
@@ -34,14 +42,49 @@ export class AdbManager {
 	// --- discovery -------------------------------------------------------
 
 	async devices() {
-		const r = await run(this.cfg.adbPath, ["devices"], { timeoutMs: 10000 });
+		let r = await run(this.cfg.adbPath, ["devices"], { timeoutMs: 10000 });
 		if (r.spawnError) throw new Error(`adb binary not found at "${this.cfg.adbPath}" (install android-tools / platform-tools)`);
+		if (BOOT_SIG.test(`${r.stdout}\n${r.stderr}`)) {
+			// Server cannot auto-start from this uid (Termux /tmp) — bootstrap
+			// the nodaemon form and retry once.
+			await this.bootstrapServer();
+			r = await run(this.cfg.adbPath, ["devices"], { timeoutMs: 10000 });
+		}
 		const out = [];
 		for (const line of r.stdout.split(/\r?\n/).slice(1)) {
 			const m = line.match(/^(\S+)\s+(\S+)/);
 			if (m) out.push({ serial: m[1], state: m[2] });
 		}
 		return out;
+	}
+
+	// Spawn `adb -L tcp:5037 nodaemon server start` detached (survives our
+	// exit), then poll until a `devices` probe stops showing the bootstrap
+	// failure. Concurrent callers share one in-flight attempt.
+	async bootstrapServer() {
+		if (this._booting) return this._booting;
+		this._booting = (async () => {
+			log("adb server cannot auto-start from this uid — spawning nodaemon fallback");
+			try {
+				const child = spawn(this.cfg.adbPath, ["-L", "tcp:5037", "nodaemon", "server", "start"], {
+					stdio: "ignore",
+					detached: true
+				});
+				if (child && typeof child.unref === "function") child.unref();
+			} catch {
+				/* poll below decides either way */
+			}
+			for (let i = 0; i < 12; i++) {
+				await new Promise((res) => setTimeout(res, 500));
+				const p = await run(this.cfg.adbPath, ["devices"], { timeoutMs: 8000 });
+				if (!p.spawnError && !BOOT_SIG.test(`${p.stdout}\n${p.stderr}`)) {
+					log("adb server up (nodaemon fallback)");
+					break;
+				}
+			}
+			this._booting = null;
+		})();
+		return this._booting;
 	}
 
 	// Parse `adb mdns services` for the wireless-debugging connect port. Physical

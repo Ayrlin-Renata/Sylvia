@@ -176,3 +176,105 @@ test("detect: ip binary missing → fail closed (metered true, source unavailabl
 	assert.equal(s.metered, true);
 	assert.equal(s.source, "unavailable");
 });
+
+// --- denied netlink (Termux app uid) ---------------------------------------
+// Real AVD finding: from the Termux uid, `ip route get` fails with
+// "Cannot bind netlink socket: Permission denied" (SELinux runas_app) —
+// that must NOT be treated as "no network".
+
+test("parseIpRoute: netlink permission denied → denied, not unreachable", () => {
+	const r = parseIpRoute("", "Cannot bind netlink socket: Permission denied\n", 1);
+	assert.equal(r.denied, true);
+	assert.equal(r.unreachable, false);
+	assert.equal(r.iface, null);
+});
+
+test("parseIpRoute: unreachable text wins over the word netlink (RTNETLINK)", () => {
+	const r = parseIpRoute("", "RTNETLINK answers: Network is unreachable\n", 2);
+	assert.equal(r.unreachable, true);
+	assert.equal(r.denied, false);
+});
+
+const DENIED = { code: 1, stdout: "", stderr: "Cannot bind netlink socket: Permission denied\n" };
+const WIFI_ROUTE = { stdout: "1.1.1.1 via 192.168.1.1 dev wlan0 src 192.168.1.50\n" };
+
+function seqRunFn(map) {
+	// Like fakeRun, but values may be arrays consumed in order per call key.
+	const seen = new Map();
+	return async (bin, argv) => {
+		const key = argv.join(" ");
+		let hit = map[key];
+		if (Array.isArray(hit)) {
+			const i = seen.get(key) ?? 0;
+			seen.set(key, i + 1);
+			hit = hit[Math.min(i, hit.length - 1)];
+		}
+		if (!hit) throw new Error(`unexpected command: ${bin} ${key}`);
+		return { code: 0, signal: null, timedOut: false, spawnError: false, stdout: "", stderr: "", ...hit };
+	};
+}
+
+test("detect: netlink denied → retries as adbd (tier0-adb+netpolicy)", async () => {
+	const runFn = seqRunFn({
+		"route get 1.1.1.1": DENIED,
+		"shell ip route get 1.1.1.1": WIFI_ROUTE,
+		"shell dumpsys netpolicy": { stdout: "  mMeteredIfaces=[rmnet_data0]\n" }
+	});
+	const s = await detect(baseCfg, runFn);
+	assert.equal(s.transport, "wifi");
+	assert.equal(s.iface, "wlan0");
+	assert.equal(s.metered, false);
+	assert.equal(s.source, "tier0-adb+netpolicy");
+});
+
+test("detect: denied + adb route dead → connectivity-type fallback (tier1-connectivity)", async () => {
+	const runFn = seqRunFn({
+		"route get 1.1.1.1": DENIED,
+		"shell ip route get 1.1.1.1": { code: 1, stdout: "", stderr: "error: device offline" },
+		"shell dumpsys connectivity": {
+			stdout: "Active default network: 101\nNetworkAgentInfo{ni{[type: WIFI]}} network{101} NOT_METERED VALIDATED\n"
+		}
+	});
+	const s = await detect(baseCfg, runFn);
+	assert.equal(s.transport, "wifi");
+	assert.equal(s.metered, false);
+	assert.equal(s.validated, true);
+	assert.equal(s.source, "tier1-connectivity");
+	assert.equal(s.tier1Available, true);
+});
+
+test("detect: denied + everything dead → tier0-denied, fail closed", async () => {
+	const runFn = seqRunFn({
+		"route get 1.1.1.1": DENIED,
+		"shell ip route get 1.1.1.1": { code: 1, stdout: "", stderr: "error: device offline" },
+		"shell dumpsys connectivity": { code: 1, stdout: "", stderr: "error: closed" }
+	});
+	const s = await detect(baseCfg, runFn);
+	assert.equal(s.transport, "none");
+	assert.equal(s.metered, true);
+	assert.equal(s.source, "tier0-denied");
+});
+
+test("detect: adb bootstrap signature → nodaemon fallback spawns, command retried", async () => {
+	const spawned = [];
+	const runFn = seqRunFn({
+		"route get 1.1.1.1": WIFI_ROUTE,
+		"devices": [
+			{ code: 1, stdout: "", stderr: "adb: ADB server didn't ACK\nfailed to start daemon: cannot open /tmp/adb.10217.log\n" },
+			{ stdout: "List of devices attached\n127.0.0.1:5555\tdevice\n" }
+		],
+		"shell dumpsys netpolicy": [
+			{ code: 1, stdout: "", stderr: "adb: ADB server didn't ACK\n" },
+			{ stdout: "  mMeteredIfaces=[rmnet_data0]\n" }
+		]
+	});
+	const spawnFn = (bin, args) => {
+		spawned.push(args.join(" "));
+		return { unref() {} };
+	};
+	const s = await detect(baseCfg, runFn, spawnFn);
+	assert.equal(spawned.length, 1, "nodaemon server spawned once");
+	assert.ok(spawned[0].includes("nodaemon"), "spawned the nodaemon form");
+	assert.equal(s.metered, false, "netpolicy retry succeeded");
+	assert.equal(s.source, "tier0+netpolicy");
+});

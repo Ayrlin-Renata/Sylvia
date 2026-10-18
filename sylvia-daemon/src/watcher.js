@@ -34,7 +34,8 @@ export function createWatcher({ config, netgate, store, log }) {
 			const changed =
 				!lastState ||
 				lastState.transport !== state.transport ||
-				lastState.metered !== state.metered;
+				lastState.metered !== state.metered ||
+				lastState.source !== state.source;
 
 			if (changed) {
 				log("netstate:", state.transport, state.metered ? "METERED" : "unmetered", `via ${state.source}`);
@@ -42,8 +43,11 @@ export function createWatcher({ config, netgate, store, log }) {
 					// fail-closed engaged because the 'ip' binary could not be spawned
 					log("hint: Tier-0 detection unavailable — is `ip` installed? (pkg install iproute2)");
 				}
-				lastState = state;
 			}
+			// ALWAYS publish the fresh state (with its fresh `at` stamp), not
+			// just on transitions — a frozen snapshot makes /api/network look
+			// stale and hides poll liveness from consumers.
+			lastState = state;
 
 			if (!config.gateEnabled) return;
 

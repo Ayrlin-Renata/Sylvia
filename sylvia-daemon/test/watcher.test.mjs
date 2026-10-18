@@ -93,3 +93,25 @@ test("watcher: gateEnabled=false → no hold even when metered", async (t) => {
 	await watcher.tick(); // would hold if enabled
 	assert.equal(netgate.status().held, false);
 });
+
+test("watcher: lastState is refreshed EVERY tick (fresh `at` even when the verdict is unchanged)", async (t) => {
+	// AVD finding: /api/network served a boot-time snapshot with a frozen `at`
+	// because lastState only updated on transport/metered transitions.
+	const dir = await tempDir(t);
+	const store = new StateStore(dir);
+	await store.init();
+	const watcher = createWatcher({
+		config: config(),
+		netgate: createNetgate({ killFn: () => {} }),
+		store,
+		log: () => {}
+	});
+	await watcher.tick();
+	const first = watcher.getLastState();
+	await new Promise((r) => setTimeout(r, 12));
+	await watcher.tick();
+	const second = watcher.getLastState();
+	assert.ok(first && second, "both ticks produced a state");
+	assert.equal(second.source, first.source, "verdict unchanged across ticks");
+	assert.ok(second.at > first.at, `at must advance per tick (first=${first.at} second=${second.at})`);
+});

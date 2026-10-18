@@ -32,6 +32,22 @@ export async function taskerWriteAndReload(adb, cfg, { xml, filename, reload = t
 		throw new Error(`tasker_write_and_reload: filename must end in .prj.xml / .tsk.xml / .prf.xml (got "${name}")`);
 	}
 
+	// Refuse to claim success on a device without Tasker: `am broadcast`
+	// exits 0 even with zero receivers, which produced a silent false-success
+	// ("Broadcast completed: result=0" on a Tasker-less emulator). When a
+	// reload was requested, verify a receiver could exist BEFORE writing.
+	const pkg = cfg.taskerPackage;
+	let taskerPresent = null;
+	const pm = await adb.shell(`pm path ${pkg}`, { timeoutMs: 8000 });
+	taskerPresent = !pm.spawnError && pm.code === 0 && /package:/.test(pm.stdout ?? "");
+	if (!taskerPresent && reload) {
+		throw new Error(
+			`tasker_write_and_reload: ${pkg} is not installed on this device (pm path found nothing) — ` +
+				`nothing would process the reload broadcast, so refusing to report success. ` +
+				`Install Tasker, or call with reload:false to only stage the file.`
+		);
+	}
+
 	// Stage the XML in Termux-local temp, then `adb push` to shared storage.
 	const tmp = path.join(os.tmpdir(), `sylvia-${Date.now()}-${Math.random().toString(36).slice(2)}.xml`);
 	const remote = `${cfg.taskerDir.replace(/\/+$/, "")}/${name}`;
@@ -66,6 +82,10 @@ export async function taskerWriteAndReload(adb, cfg, { xml, filename, reload = t
 	return {
 		written: remotePath,
 		bytes: Buffer.byteLength(xml, "utf8"),
+		taskerPresent,
+		...(taskerPresent === false
+			? { warning: `${pkg} is not installed — the file was staged but no reload broadcast was sent` }
+			: {}),
 		reload: reload
 			? {
 					action: cfg.taskerReloadAction,
