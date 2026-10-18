@@ -596,6 +596,87 @@ landed upstream and must survive any rebuild. (An earlier note claiming these we
    obsolete as a report (package replaced); the `latest`-tag-parked-at-`0.0.1-rc.1`
    oddity and the immutable-cache default are worth noting upstream.
 
+## 17.5 Upgrade plan — AVD fork → 0.2.1-alpha.5 (two-subagent research, 2026-10-17)
+
+Answers: "feasibility of bringing the fork (the mobile plugin that runs DSH on
+the AVD) up to the PC harness version." Two read-only subagents delivered a
+full 12-package fork-delta matrix and a seam audit of the alpha.5 train; both
+reports are folded in below. **Verdict: FEASIBLE, medium effort, gated on one
+fork rebuild.** (Registry at time of writing: `latest=0.2.0-rc.2`,
+`alpha=0.2.1-alpha.5`, `next=0.2.1-rc.2` — there is still no non-prerelease
+0.2.1; the PC runs the `alpha` tag, so that is the parity target.)
+
+### 17.5.1 Seam audit — Sylvia contracts on 0.2.1-alpha.5 (ALL GREEN)
+
+`tapIndex` (disposer, `dsh-host-webserver`), MCP stdio schema + `serverName`
+regex + `mcp__<server>__<name>`, `createUserMessage` (dsh-llm), `agents`
+service (`status|inject|followup|cancel` in `dsh-agent`), `- insert:` rows
+(`cordis-plugin-include@~1.0.10-alpha.2` still silently skips bare `- id:` —
+and the live PC profile proves an insert row works), `maxImageDimension`
+projection (now in `dsh-api-session-controller` — **`dsh-host-apiproxy` was
+renamed**; no sylvia source imports it), no `engines` field (Termux node 24.18
+unblocked). Retires: `cordis-plugin-hmr`/`registerConfig`/`watchUserPatches`
+exist nowhere — HMR is now `@deepseek-ai/dsh-hmr` as a loader entry — so the
+1.0.17 pin and the profile-boot settle patch both retire. `dsh-web-frontend`
+and `dsh-client-modules` exist at alpha.5 (cm-align helper inputs safe).
+
+### 17.5.2 Fork delta matrix (12/12 diffed: fork vs stock rc.7 vs alpha.5)
+
+Cross-cutting pattern (port once): **fork moves native addons to
+`optionalDependencies`** — sharp (attachment-local), koffi (fs-local,
+host-directory-picker-native, session-persistence-jsonl), windows-acl
+(sandbox-local), node-pty (subprocess-local). alpha.5 has NONE of these
+(hard deps remain) — still required for Termux installs. Upstream alpha.5
+adopted *lazy loading* for sharp/node-pty via `createLazyRequire` — so those
+fork halves retire; the manifest halves do not.
+
+| # | package | verdict | port action |
+|---|---------|---------|-------------|
+| 1 | attachment-local | MANUAL (M) | keep `isHardLinkUnsupported`→`copyFile(COPYFILE_EXCL)` + optional sharp; DROP lazy-sharp (upstream `createLazyRequire`) |
+| 2 | client-modules | ALREADY-UPSTREAM | nothing (immutable cache identical) |
+| 3 | client-ui-directory-picker-browse | TRANSPLANT (L) | mobile browse UI + retry/breadcrumbs onto rewritten client.js |
+| 4 | client-ui-layout | TRANSPLANT (L) | `MobileFrame` + drawers + breakpoints onto rewritten client.js (alpha.5 rewrote 424/160 lines, has 0 mobileFrame refs) |
+| 5 | fs-local | CLEAN (S) | hardlink→copyFile in `writeFileAtomic` + optional koffi |
+| 6 | host-directory-picker-browse | CLEAN (M) | `listTimeoutMs` deadline (alpha.5 lib byte-identical to rc.7 — direct transplant, 148 lines) |
+| 7 | host-directory-picker-native | CLEAN (S) | manifest only (optional koffi) |
+| 8 | sandbox | CLEAN (S) | `SandboxUnavailableError(mode, detail, platform)` + Android message |
+| 9 | sandbox-local | CLEAN (S) | optional windows-acl + pass platform (same call site, line 492) |
+| 10 | session-persistence-jsonl | CLEAN (S) | `link()`→rename fallback (alpha.5 still bare `await link(...)`) |
+| 11 | subprocess-local | MANUAL (M) | keep android→LinuxProcessInspector (now `runner-launch-B2zsQ1Dz.js:669`) + `ensure-spawn-helper.mjs` guard; DROP lazy-pty |
+| 12 | terminal-bash | MANUAL (M) | `resolveShellPath`→`$PREFIX/bin/bash` on android, re-expressed in alpha.5's new `resolveConfig`/`apply` flow; PROMPT hunk clean |
+
+Effort: 6 easy patches + 4 small merges + 2 UI transplants. Registry quirk:
+`dsh-workflow-worker-thread` has NO 0.2.1 line (own train: `alpha=0.1.5-alpha.2`)
+— if the alpha.5 standard preset still references it, pin that train instead
+of failing; the ambient sweep will surface it if so.
+
+### 17.5.3 Phased plan
+
+- **Phase A — fork rebuild (gates everything).** Add `build/` to the fork:
+  patch sources + a script (unpack stock@target → apply patches → repack →
+  12 tarballs), per §16's reproducibility rule. Target `0.2.1-alpha.5`;
+  manifests re-pin to `0.2.1-alpha.5` (ignore the fork's stale `^rc.5` pins).
+  Sub-phases: **A1** = S/M patches + optionalDependencies pattern (6+4 pkgs);
+  **A2** = the two UI transplants (mobile shell). A1 alone boots 0.2.1 on
+  Termux with a desktop-ish layout; A2 restores the phone experience — land
+  A1→AVD-boot, then A2→visual check.
+- **Phase B — sylvia install.sh re-target** (42 rc-era refs mapped): delete
+  the hmr-pin block and the profile-boot settle block; relax the attachment
+  hash-guard to a *feature* check (`maxImageDimension` present → ok, baseline
+  hash → patch, else die) or make it verify-only; bump the "CLI rc.6 + 12
+  rc.7" canary/version checks (ui-layout canary at line 465) to alpha.5;
+  prune/cm-align/ambient-sweep stay as guards (expected no-ops). README §2/§11
+  wording updates (hmr/settle rows retire).
+- **Phase C — AVD acceptance battery**: fresh install → boot green →
+  workspace select (`session.create` preset mount) → CSS seam → network flip
+  cycle → mcp tools (adb bootstrap, rclone, tasker guard) → 9router lifecycle
+  → **mobile layout visual check** (settings dialog fits = the original
+  MobileFrame purpose) → termux:boot seed.
+
+Risks: alpha churn (pinned exact — stable), native-optional install behavior
+on Termux needs one live npm run to confirm, transplants are the only
+L-effort/regression surface, workflow-worker-thread version line (17.5.2).
+
 ## 18. AVD acceptance findings — on-device agent test pass (2026-10-17)
 
 An agent running INSIDE the AVD harness executed a structured test pass; its
