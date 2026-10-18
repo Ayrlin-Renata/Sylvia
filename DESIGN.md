@@ -621,11 +621,15 @@ report drove six defect fixes, all verified live and covered by tests
    is shell-owned), both `AdbManager.devices()` (sylvia-mcp) and
    `netdetect.adbRun` (daemon) now detect the signature, spawn
    `adb -L tcp:5037 nodaemon server start` detached (logs to stderr, skips
-   `/tmp`), and retry once. Observed nuance: on the current AVD image the plain
-   auto-start *does* succeed from a truly cold state (zero servers) — the
-   `/tmp` failure is condition-dependent — so the fallback is a guaranteed
-   safety net rather than the everyday path. Cold-start from zero servers and
-   the full `resolveAndConnect → exec` chain were both verified.
+   `/tmp`), and retry once. Definitive on-device result (agent re-test R5,
+   same Termux uid): plain `adb devices` STILL fails persistently with
+   `cannot open /tmp/adb.10217.log: Permission denied → ADB server didn't
+   ACK → failed to start daemon` — the failure is the everyday path, not a
+   transient — while `resilient_adb_exec` self-recovers in the same window
+   (`adb server cannot auto-start … nodaemon fallback` / `adb server up`
+   in boot28.log, server parented to the sylvia-mcp node). An earlier
+   "cold auto-start works" reading was a pgrep-undercount artifact. The full
+   `resolveAndConnect → exec` chain was also verified.
 4. **Tasker false-success.** `am broadcast` exits 0 with zero receivers, so a
    Tasker-less device reported success. `tasker_write_and_reload` now runs
    `pm path <package>` first: absent + `reload` → structured refusal before
@@ -650,3 +654,25 @@ now engages on real metered/none and requires a control-panel resume; on this
 emulator wifi-off lands on ethernet (`other`, unmetered by §2 inference), so
 the gate staying open is correct for the AVD but will HOLD on a phone's
 cellular fallback.
+
+### 18.1 Acceptance re-run (on-device agent, all PASS)
+
+The internal agent re-verified every fix against the live harness (no restart
+needed — boot28 already ran the fixed code): R1 `rclone version` exit 0; R2
+Tasker refusal with `/sdcard/Tasker/` confirmed unwritten; R3 `/api/network`
+`wifi` with `at` advancing exactly per 20s tick; R4 wifi-off verdict in 21.7s
+(`other`/eth0 — emulator NAT persists, Termux ping fails), wifi-on back in
+17.8s; R5 the adb `/tmp` failure + tool self-recovery quoted above; R6 mdns
+backoff escalating `60s → 120s → 240s → 480s → 900s (cap, ×3)` with
+`lastError: "died ~0s after start (exit 1) — death streak 8"`.
+
+Two live observations worth keeping: (a) **the fail-closed gate caught the
+tester** — killing adb servers for R5 drove `none METERED via tier0-denied` →
+netgate HOLD → sylvia-bridge parked an in-flight task for the flap duration
+(working as designed, not a defect); and (b) minor quirk: tier-1 dumpsys can
+report `validated:true` for a moment while Termux-uid ping already fails —
+harmless because transport (`other`, not `wifi`) is the field the gate uses.
+After acceptance, the sticky test-artifact hold (21:27, by locked policy) was
+released through the designed explicit path `POST /api/netgate/resume`.
+Pre-existing, unrelated: `settings get global wifi_on` throws
+`INTERACT_ACROSS_USERS` from the Termux uid (shell uid required).
