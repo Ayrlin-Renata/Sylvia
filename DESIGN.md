@@ -677,6 +677,20 @@ Risks: alpha churn (pinned exact — stable), native-optional install behavior
 on Termux needs one live npm run to confirm, transplants are the only
 L-effort/regression surface, workflow-worker-thread version line (17.5.2).
 
+**STATUS (2026-10-18): Phases A and B are complete.** Fork at `2c4f149`
+(identity-corrected force-push: author/committer = Ayrlin Renata) — 11
+byte-reproducible tarballs, the `build/` pipeline committed. Sylvia installer
+re-targeted: the hmr-pin and profile-boot-settle blocks are tombstoned (their
+anchors no longer exist on this train — the settle search would have died on
+every fresh install), `dsh_siblings` dropped client-modules, the canary now
+compares against `SYLVIA_DSH_TARGET_VER` (default `0.2.1-alpha.5`) so any
+previous train forces repair, stale fork clones are auto-recloned, the fork's
+pinned tarball version is cross-checked against the target (die on skew), the
+attachment helper verifies `maxImageDimension` instead of patching (legacy
+repair path retained), and cm-align understands the nested exact-pinned shape.
+Phase C is deferred to a user-driven full AVD wipe to prove the clean
+install end-to-end.
+
 ## 18. AVD acceptance findings — on-device agent test pass (2026-10-17)
 
 An agent running INSIDE the AVD harness executed a structured test pass; its
