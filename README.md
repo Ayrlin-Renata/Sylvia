@@ -262,9 +262,11 @@ curl -s -X POST http://127.0.0.1:3090/api/modules/9router/off
 # The custom CSS seam should be injecting the style tag (also needs the
 # harness running; -> 1). The 0.2.1 train token-auths the harness (bare /
 # answers 401), so grab the one-time token the launcher logs, and use a
-# cookie jar so the ?token -> 303 -> / redirect keeps the session. Edit
-# ~/.sylvia/mobile.css and re-run to see it live:
-TOK=$(grep -o 'token=[A-Za-z0-9]*' ~/.sylvia/dsh-web.log | head -n1)
+# cookie jar so the ?token -> 303 -> / redirect keeps the session. Tokens are
+# one-time: if the browser already consumed the line you're grepping, restart
+# the harness (or copy the URL it opened). Edit ~/.sylvia/mobile.css and
+# re-run to see it live:
+TOK=$(grep -o 'token=[A-Za-z0-9_-]*' ~/.sylvia/dsh-web.log | tail -n1)
 curl -s -c /tmp/sj -b /tmp/sj -L "http://127.0.0.1:3080/?$TOK" | grep -c sylvia-mobile-css
 
 # The 9 Sylvia tools should register over the MCP stdio handshake (this is what

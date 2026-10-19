@@ -1165,6 +1165,144 @@ EOF
 }
 
 # =============================================================================
+#  MODULE 6.5 — default community plugins (github: specs, npm-only profile)
+# =============================================================================
+# DSH activates plugins ONLY through dsh.profile.bundles (bundle deps are
+# presence-checked at boot; cordis.patch.yml rows are NOT needed — each plugin
+# ships its own bundle patch). `dsh plugin --profile web add` is a pnpm
+# forwarder and Termux has no pnpm (it would exit 127), so we do exactly what
+# it would: install into the profile with npm (boot tolerates npm-produced
+# node_modules — it never reads pnpm-lock.yaml) and append the INSTALLED
+# package names to dsh.profile.bundles ourselves. --legacy-peer-deps mirrors
+# pnpm's autoInstallPeers:false so npm cannot drop a duplicate
+# @deepseek-ai/cordis into the profile (profile-first resolution would hand
+# plugins a second cordis instance).
+module_default_plugins() {
+  CURRENT_MODULE="default plugins"
+  local profile="$HOME/.dsh/profiles/web"
+  local pkg_json="$profile/package.json"
+
+  # Boot self-bootstraps the profile on first run — pre-boot, seed the same
+  # minimal shape it writes (bundles = the two core bundles; cordis.yml and
+  # pnpm-workspace.yaml are boot's own to create).
+  if [ ! -f "$pkg_json" ]; then
+    ensure_dir "$profile"
+    cat > "$pkg_json" <<'SEED_EOF'
+{
+  "dsh": {
+    "profile": {
+      "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"]
+    }
+  }
+}
+SEED_EOF
+    note "seeded minimal profile package.json (boot-compatible shape)"
+  fi
+
+  # sylvia-bridge must be a DECLARED profile dep: npm prunes anything not in
+  # package.json on every install into this dir, which used to delete the
+  # module_sylvia-bridge symlink right after this module's npm runs (boot then
+  # failed its import). file: deps are installed as symlinks — same target,
+  # and the bridge declares no dependencies, so npm fetches nothing for it.
+  local bridge_dir="$SYLVIA_HOME/sylvia-bridge"
+  if [ -f "$bridge_dir/package.json" ]; then
+    PLUGIN_PKG_JSON="$pkg_json" PLUGIN_BRIDGE_PATH="$bridge_dir" node <<'BRIDGE_DEP_EOF'
+const fs = require("fs");
+const f = process.env.PLUGIN_PKG_JSON;
+const j = JSON.parse(fs.readFileSync(f, "utf8"));
+j.dependencies = j.dependencies || {};
+const want = "file:" + process.env.PLUGIN_BRIDGE_PATH;
+if (j.dependencies["sylvia-bridge"] === want) process.exit(0);
+j.dependencies["sylvia-bridge"] = want;
+fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
+process.stdout.write("added");
+BRIDGE_DEP_EOF
+    # npm prunes + relinks on its next run; materialize the link NOW so a
+    # skip-installs re-run still leaves a working symlink behind. Bare install
+    # (no spec names — a spec of "sylvia-bridge" would look up the REGISTRY).
+    if [ ! -e "$profile/node_modules/sylvia-bridge" ]; then
+      ( cd "$profile" && npm install --legacy-peer-deps --no-audit --no-fund >/dev/null 2>&1 ) \
+        || note "npm did not materialize the sylvia-bridge link (bridge module creates it on its own pass)"
+    fi
+  fi
+
+  # spec=installed-dir pairs. Spec choice mirrors the PC profile that already
+  # runs these three: cabinet from github (ships its source loadable), the
+  # other two from the REGISTRY — their repos are source-only (billion's
+  # `prepare` hook deliberately fails git installs: "install the published
+  # package instead of the git source").
+  local specs=(
+    "github:Ayrlin-Renata/dsh-tool-cabinet=dsh-tool-cabinet"
+    "billion-context@^0.1.201=billion-context"
+    "@liustack/modsearch@^5.10.7=@liustack/modsearch"
+  )
+  local e spec dir
+  for e in "${specs[@]}"; do
+    spec="${e%%=*}"; dir="${e#*=}"
+    if [ -f "$profile/node_modules/$dir/package.json" ]; then
+      skip "plugin already installed: $dir"
+    else
+      # One npm call per plugin: github prep is slow (git-clone + prepare) and
+      # a batch is all-or-nothing — per-spec attribution beats one merged wall.
+      note "installing profile plugin: $spec"
+      ( cd "$profile" && npm install --legacy-peer-deps --no-audit --no-fund "$spec" ) \
+        || die "npm install of '$spec' failed in $profile (github: specs need git + network; registry specs need npm reachability)"
+    fi
+  done
+
+  # Append the ACTUAL installed package names (package.json "name" can differ
+  # from the spec, e.g. @liustack/modsearch) to dsh.profile.bundles.
+  # Idempotent: existing names are left alone.
+  local names=""
+  for e in "${specs[@]}"; do
+    dir="${e#*=}"
+    if [ -f "$profile/node_modules/$dir/package.json" ]; then
+      names="$names$(node -p "require(process.argv[1]).name" "$profile/node_modules/$dir/package.json" 2>/dev/null)
+"
+    fi
+  done
+  names="$(printf '%s' "$names" | sed '/^$/d')"
+  [ -n "$names" ] || die "default plugins landed but their package.json names are unreadable in $profile"
+  local bundles_out
+  bundles_out="$(PLUGIN_PKG_JSON="$pkg_json" PLUGIN_BUNDLE_NAMES="$names" node <<'BUNDLES_EOF'
+const fs = require("fs");
+const f = process.env.PLUGIN_PKG_JSON;
+const names = (process.env.PLUGIN_BUNDLE_NAMES || "").split("\n").filter(Boolean);
+const j = JSON.parse(fs.readFileSync(f, "utf8"));
+j.dsh = j.dsh || {};
+j.dsh.profile = j.dsh.profile || {};
+const b = (j.dsh.profile.bundles = j.dsh.profile.bundles || []);
+const added = names.filter((n) => n && !b.includes(n));
+for (const n of added) b.push(n);
+if (added.length) fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
+process.stdout.write(added.length ? added.join(" ") : "already");
+BUNDLES_EOF
+)"
+  if [ "$bundles_out" = "already" ]; then
+    skip "dsh.profile.bundles already lists the default plugins"
+  else
+    ok "bundles registered: $bundles_out"
+  fi
+
+  # engines.dsh gating: boot silently SKIPS a bundle whose engines.dsh the
+  # current train doesn't satisfy. The DSH-owned allow-version subcommand runs
+  # WITHOUT pnpm — use it proactively when a plugin declares engines.dsh.
+  local pj ver eng
+  for e in "${specs[@]}"; do
+    dir="${e#*=}"
+    pj="$profile/node_modules/$dir/package.json"
+    [ -f "$pj" ] || continue
+    eng="$(node -p "const x=require(process.argv[1]).engines; x && x.dsh ? x.dsh : ''" "$pj" 2>/dev/null || true)"
+    [ -n "$eng" ] || continue
+    ver="$(node -p "require(process.argv[1]).version" "$pj" 2>/dev/null || true)"
+    note "$dir declares engines.dsh '$eng' — accepting for ${SYLVIA_DSH_TARGET_VER:-0.2.1-alpha.5}"
+    dsh plugin --profile web allow-version "$dir@$ver" \
+      --dsh-version "${SYLVIA_DSH_TARGET_VER:-0.2.1-alpha.5}" --accept-risk \
+      >/dev/null 2>&1 || note "allow-version did not confirm for $dir (boot will be the judge)"
+  done
+}
+
+# =============================================================================
 #  MODULE 7 — launchers + env file
 # =============================================================================
 module_launchers() {
@@ -1964,6 +2102,7 @@ module_sylvia_bridge
 module_tasker_mcp
 module_mitm_mcp
 module_register_mcp
+module_default_plugins
 module_launchers
 module_termux_boot
 module_adb_connect
