@@ -458,13 +458,15 @@ sylvia-mcp/         custom MCP server source (9 tools)
 sylvia-daemon/      control daemon (network detection, netgate, registry, modules, web panel)
 sylvia-bridge/      DSH plugin (network-aware harness gating)
 modules/            module definitions (sillytavern, mdns) — copied to ~/.sylvia/modules/
-reference/          git clones of the upstream tools, for debugging only — NOT shipped
+owned_forks/        OUR forks (DSH Mobile patches, dsh-nuncia) — changes are made here — NOT shipped
+reference/          read-only clones of upstream tools (tasker-mcp, mitmproxy-mcp) — NOT shipped
 ```
 
-`reference/` holds clones of `Deepseek-harness-mobile`, `tasker-mcp`, and
-`mitmproxy-mcp`. They are **not** part of the install; they exist so you can read the
-upstream code while developing or debugging. `install.sh` prefers them when present (so a
-dev checkout works offline) and falls back to a shallow `git clone` otherwise.
+`owned_forks/` holds the forks we actually develop in: `Deepseek-harness-mobile` (the
+Android/Termux DSH patches) and `dsh-nuncia` (the authenticated A2A bridge, DESIGN §20).
+`reference/` holds read-only clones of `tasker-mcp` and `mitmproxy-mcp`. None of this is
+part of the install; `install.sh` prefers local clones when present (so a dev checkout
+works offline) and falls back to a shallow `git clone` otherwise.
 
 ---
 

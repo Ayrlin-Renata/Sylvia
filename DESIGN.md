@@ -3,8 +3,10 @@
 Living design document for the Sylvia agent-harness project. Keeps architecture decisions on track across sessions.
 Companion docs: `README.md` (user install), `install.sh` (installer), `sylvia-mcp/` (MCP server source).
 
-Related repos (reference only, not shipped): `reference/Deepseek-harness-mobile` (our fork of DSH Mobile),
-`reference/tasker-mcp`, `reference/mitmproxy-mcp`.
+Related repos: `owned_forks/Deepseek-harness-mobile` (our fork of DSH Mobile),
+`owned_forks/dsh-nuncia` (our fork of dsh-a2a-server — the A2A bridge, §20) — our
+changes live there, never shipped. `reference/tasker-mcp`, `reference/mitmproxy-mcp`
+(read-only upstream clones, debugging only).
 
 ---
 
@@ -450,7 +452,7 @@ Rationale: structured JSON over a DB (matches the existing state-management appr
 
 Raised as a queued follow-up concern: move the *reasonable* fixes out of Sylvia's
 installer and into `Ayrlin-Renata/Deepseek-harness-mobile` (local clone:
-`reference/Deepseek-harness-mobile`). Analysis done; execution awaits sign-off.
+`owned_forks/Deepseek-harness-mobile`). Analysis done; execution awaits sign-off.
 
 ### 16.1 Ground truth
 
@@ -518,7 +520,8 @@ with no version handshake).
 
 ### 16.4 Cautions
 
-- `reference/` clones are dev-only (never shipped); changes stay local until pushed
+- `owned_forks/` + `reference/` clones are dev-only (never shipped); changes stay local
+  until pushed
   — publishing fork updates needs the user's GitHub auth.
 - ~~Sylvia's tree has **uncommitted** changes~~ — resolved 2026-10-17: everything
   (README, install.sh, bridge/daemon fixes, `patches/`, `modules/`, `assets/`)
@@ -922,8 +925,9 @@ traffic can never be mistaken for the user's will. **Standalone first** —
 plain DSH + the plugin + a pairing secret must work on a desktop with no
 Sylvia installed; Sylvia integration is an optional layer on top.
 
-Base: fork of **[MicroWearld/dsh-a2a-server](https://github.com/MicroWearld/dsh-a2a-server)**
-(verified firsthand 2026-10-19): A2A v1.0 JSON-RPC/SSE (`/a2a`, AgentCard
+Base: our fork **`owned_forks/dsh-nuncia`** ([Ayrlin-Renata/dsh-nuncia](https://github.com/Ayrlin-Renata/dsh-nuncia),
+forked from **[MicroWearld/dsh-a2a-server](https://github.com/MicroWearld/dsh-a2a-server)** —
+verified firsthand 2026-10-19): A2A v1.0 JSON-RPC/SSE (`/a2a`, AgentCard
 `/.well-known/agent.json`), Task↔DSH-Session mapping, bearer auth
 (`auth.tokenEnv`), task TTL + file persistence (`persistTasks`/
 `persistenceRoot`), `input-required` approval mapping, request-level
@@ -935,12 +939,16 @@ bundle. Peers: `dsh-agent/llm/session/user-approval` + `cordis ^4` +
 
 ### 20.1 Authority model (the four concepts, formalized)
 
+Vocabulary (short names; the wire carries strings): **`peer`** = default, no
+envelope at all; **`house`** = the policy layer (never a wire level); **`intent`**
+= user intent (L2); **`override`** = intent that may contradict house (L4).
+
 | level | name | receiver treats the sender as | constraints |
 |---|---|---|---|
-| 1 | **normal A2A** (default) | assisting *its* chatelaine — receiver is top authority | none |
-| 2 | **A2A + user intent** | top authority — receiver assists | may never contradict House Rules; time-boxed + scoped |
-| — | **House Rules** | *constraint layer*, not a message level | per-chatelaine, per-device, set by the user; ceilings everything below L4 |
-| 4 | **user intent to override** | top authority, *may* contradict House Rules | minted only via direct user authentication (approval dialog etc.) |
+| — | **peer** (default, no envelope) | assisting *its* chatelaine — receiver is top authority | none |
+| 2 | **intent** | top authority — receiver assists | may never contradict `house`; time-boxed + scoped |
+| — | **house** | *constraint layer*, not a message level | per-chatelaine, per-device, set by the user; ceilings everything below `override` |
+| 4 | **override** | top authority, *may* contradict `house` | minted only via direct user authentication (approval dialog etc.) |
 
 Normative rules:
 
@@ -949,26 +957,26 @@ Normative rules:
    are never authority. Kills "I am the user" prompt injection at the door.
 2. **Drift/lapse rule** (the feedback-loop killer). On grant expiry or
    failed re-verification, tasks *issued* while authorized keep executing
-   (latched), but for every new message the receiver reverts to level 1:
+   (latched), but for every new message the receiver reverts to `peer`:
    the remote is assisting the chatelaine again and must re-present a
    valid grant to claim otherwise.
 3. **Non-transitivity.** Grants are signed by the minting node's identity
    and bound to `(origin, target, jti)`; receivers verify the binding.
-   Relays **forget** — a forwarded message is re-sent as level 1. Grants
+   Relays **forget** — a forwarded message is re-sent as `peer`. Grants
    never ride responses (responses carry no `metadata.authority` at all);
-   a response that claims intent is processed as level 1 *and* raised as
+   a response that claims intent is processed as `peer` *and* raised as
    a security event.
-4. **Presence ≠ per-command authorization** (stated openly). An L2/L4
-   window delegates authority for its duration and scope — everything the
-   holder asks during it carries intent BY DESIGN. Damage radius is
-   bounded by: short windows (default 10 min), an optional free-text
-   `scope` chosen at mint and checked by the receiver, House Rules, and
-   the revoke endpoint.
+4. **Presence ≠ per-command authorization** (stated openly). An
+   `intent`/`override` window delegates authority for its duration and
+   scope — everything the holder asks during it carries intent BY DESIGN.
+   Damage radius is bounded by: short windows (default 10 min), an
+   optional free-text `scope` chosen at mint and checked by the receiver,
+   house rules, and the revoke endpoint.
 5. **Fail down, notify loud.** Bad signature/expiry/binding ⇒ process as
-   level 1 AND raise a security event (toast / OS dialog / panel badge) —
+   `peer` AND raise a security event (toast / OS dialog / panel badge) —
    never silently.
 
-Envelope: `metadata.authority = { v:1, level:2|4, scope?, origin, target, iat, exp, jti, sig }`
+Envelope: `metadata.authority = { v:1, level:"intent"|"override", scope?, origin, target, iat, exp, jti, sig }`
 - `sig` = HMAC-SHA256 over canonical fields with key material **derived
   from the pairing secret** (one pairing ceremony also derives the bearer
   token — connection auth and authority share one root).
@@ -1003,8 +1011,9 @@ exists. No tool returns the pairing secret or a live grant.
   the planned upgrade for transient P2P; the handshake abstraction is
   designed so Noise slots in without changing the authority model.
 - **Pairing ceremony** = the first-contact problem: one secret
-  (`A2A_PAIRING_SECRET`, generated on either node, entered out-of-band)
-  → derives bearer + HMAC root (+ future Noise PSK). Peers are
+  (`NUNCIA_PAIRING_SECRET` — **env paste for v1, decided 2026-10-19**;
+  generated on either node) → derives bearer + HMAC root (+ future Noise
+  PSK). Peers are
   addressed by *name*; the handshake authenticates regardless of IP, so
   churn doesn't matter — Sylvia-integration remembers last-seen address
   per name purely as a routing convenience.
@@ -1013,19 +1022,29 @@ exists. No tool returns the pairing secret or a live grant.
 
 ### 20.4 Chatelaine & operators (application layer)
 
+The operator model ships **inside nuncia** (decided 2026-10-19) — it is
+intrinsically part of the communication protocol, so task intake, handle
+generation, operator spawn conventions (the prompt/skill content the plugin
+injects), and TTL pruning are plugin code. Sylvia only *hosts* the
+Housekeeping workspace.
+
 - **Housekeeping workspace** + default **Chatelaine** session; the
-  conventions live in a workspace-scoped SKILL: short immediate report
-  on contact; concise completion report; escalate important decisions to
-  the parent; verify authority *envelopes* (never text claims); security
-  event → notify; never assume replies carry intent.
+  conventions (delivered by the plugin's injected content) : short
+  immediate report on contact; concise completion report; escalate
+  important decisions to the parent; verify authority *envelopes* (never
+  text claims); security event → notify; never assume replies carry intent.
 - **Operators**: incoming task → Task↔Session (upstream mapping) inside
   the Housekeeping workspace; Chatelaine spawns an operator subagent per
   task (DSH subagent spawn) with the report-discipline instructions. The
-  fork returns a random handle (`op_<16hex>`) in the task's first event;
-  re-contact = SendMessage referencing the handle/taskId.
-- **7-day operators**: fork gains per-task `expiresAt` (default 7d,
-  overriding upstream's single `taskTtlMs`) + a prune pass that removes
-  task files and archived sessions; handles die with them.
+  plugin returns a random handle (`op_<16hex>`) in the task's first
+  event; re-contact = SendMessage referencing the handle/taskId.
+- **7-day operators**: per-task `expiresAt` (default 7d, overriding
+  upstream's single `taskTtlMs`) + a prune pass that removes task files
+  and archived sessions; handles die with them.
+- **House rules**: one file living in a **tiny dedicated git repo** —
+  every edit goes through the plugin admin endpoint and is auto-committed
+  (history, blame, rollback for free). Agents have read-only access;
+  unsigned local edits are local-trust (per 20.6).
 - **Inter-session communication** = SPIKE in P3. Uniform-primitive
   proposal: everything is an A2A task; `metadata.targetSession` routes
   into an *existing* session instead of creating one (local calls just
@@ -1072,13 +1091,18 @@ residuals are accepted consciously, not overlooked.
   prune, security-event → notification path.
 - **P3 — inter-session spike + Sylvia glue**: `targetSession` decision,
   panel buttons, netgate exemption, toasts, remembered peers.
-- **P4 — hardening**: Noise/pairing UX, per-node keys, README A2A
-  section + troubleshooting rows, arm64 physical-device run.
+- **P4 — hardening**: Noise/pairing UX, per-node keys, **new nuncia
+  READMEs in EN + ZH acknowledging the original upstream** (same pattern
+  as the mobile fork), plus the Sylvia-side README A2A section +
+  troubleshooting rows; arm64 physical-device run.
 
 ### 20.8 Open decisions
 
-- Pairing-secret entry UX (env paste vs admin endpoint vs QR).
-- House Rules file shape + whether unsigned local edits are trusted
-  (local-trust accepted for v1, per 20.6).
-- Native dialog surface per platform (desktop vs Android).
+- Native dialog surface per platform (desktop vs Android) — config surface.
 - `targetSession` feasibility → decided by the P3 spike.
+
+Decided 2026-10-19: authority vocabulary = `peer` / `house` / `intent` /
+`override`; operator orchestration lives inside the plugin; pairing = env
+paste (`NUNCIA_PAIRING_SECRET`); house rules = single file in a tiny git
+repo with auto-committed history; nuncia gets its own EN + ZH READMEs
+acknowledging MicroWearld's original.
