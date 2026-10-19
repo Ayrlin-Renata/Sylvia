@@ -32,9 +32,11 @@
  *     We snapshot every tagged style at apply-time and restore any that
  *     disappear (unless the owner re-injected a fresh one).
  *
- * Deliberately NOT here (user decisions after live testing): frame-grid
- * pins, sidebar drawer overrides and hamburger buttons — the fork's
- * MobileFrame shell (in dsh-client-ui-layout) owns the mobile main page.
+ * Deliberately NOT here (user decisions after live testing): frame-grid pins,
+ * sidebar drawer overrides and hamburger buttons — the stock AppFrame owns the
+ * main page (its sidebar auto-collapses to an icon rail below 1024px), and the
+ * fork's MobileFrame shell was retired (2026-10-19): all mobile UI concerns
+ * now live in this plugin, never in forked layout code.
  *
  * Structural hooks: [data-shortcut-modal="settings"] (settings dialog),
  * nav > div first/last children (navTitle/navList), button > span last

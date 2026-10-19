@@ -635,7 +635,7 @@ fork halves retire; the manifest halves do not.
 | 1 | attachment-local | MANUAL (M) | keep `isHardLinkUnsupported`→`copyFile(COPYFILE_EXCL)` + optional sharp; DROP lazy-sharp (upstream `createLazyRequire`) |
 | 2 | client-modules | ALREADY-UPSTREAM | nothing (immutable cache identical) |
 | 3 | client-ui-directory-picker-browse | TRANSPLANT (L) | mobile browse UI + retry/breadcrumbs onto rewritten client.js |
-| 4 | client-ui-layout | TRANSPLANT (L) | `MobileFrame` + drawers + breakpoints onto rewritten client.js (alpha.5 rewrote 424/160 lines, has 0 mobileFrame refs) |
+| 4 | client-ui-layout | RETIRED (2026-10-19) | `MobileFrame` removed from the fork (commit f9e702a): its css-module map never gained the mobile class keys (unclassed/unstyled mobile UI) and UI concerns now belong to `sylvia-bridge` — package ships stock with absent-markers proving the removal |
 | 5 | fs-local | CLEAN (S) | hardlink→copyFile in `writeFileAtomic` + optional koffi |
 | 6 | host-directory-picker-browse | CLEAN (M) | `listTimeoutMs` deadline (alpha.5 lib byte-identical to rc.7 — direct transplant, 148 lines) |
 | 7 | host-directory-picker-native | CLEAN (S) | manifest only (optional koffi) |

@@ -85,8 +85,8 @@ re-run the same command.
 2. **DSH CLI + mobile/Android patches** — clones your
    [`Ayrlin-Renata/Deepseek-harness-mobile`](https://github.com/Ayrlin-Renata/Deepseek-harness-mobile)
    fork, then installs the CLI (`@deepseek-ai/dsh`, exact-pinned) and overlays the
-   fork's 11 local tarballs: the mobile single-column shell (`MobileFrame`), the
-   FUSE/sdcardfs hardlink→copy filesystem fallbacks, native addons moved to
+   fork's 11 local tarballs: the FUSE/sdcardfs hardlink→copy filesystem fallbacks,
+   native addons moved to
    `optionalDependencies` so npm never dies on glibc-only binaries, directory-listing
    timeouts with failed-listing retry, Termux `$PREFIX` shell resolution, and the
    Android sandbox-backend message — **one npm install per package**, because npm's
