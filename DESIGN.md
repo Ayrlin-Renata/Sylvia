@@ -799,3 +799,71 @@ After acceptance, the sticky test-artifact hold (21:27, by locked policy) was
 released through the designed explicit path `POST /api/netgate/resume`.
 Pre-existing, unrelated: `settings get global wifi_on` throws
 `INTERACT_ACROSS_USERS` from the Termux uid (shell uid required).
+
+## 19. Shell transport ladder — Shizuku first, adb as fallback (design 2026-10-18)
+
+User decision: Shizuku is **recommended, never required** — the installer must
+not refuse without it; the adb loopback stays as a working fallback that gets
+torn down when Shizuku revives. Docs will note the fallback is the
+less-maintained leg and may be retired someday. Recommended build:
+**thejaustin/ShizukuPlus** (a very active fork-of-theDJchi/Shizuku — pushed
+same-day, 1.4k stars; theDJchi's own build is maintenance-paused).
+
+### 19.1 The ladder (probe → kickstart → fallback → teardown)
+
+1. **Probe** — `rish -c id` with a hard 6s cap (loader binder timeout is ~5s;
+   rish timeouts exit 124). Alive ⇒ transport = `shizuku`.
+2. **Kickstart attempts** (Shizuku down), in order — all headless, no shell
+   needed yet:
+   a. **Token broadcast** (ShizukuPlus): `am broadcast -a af.shizuku.plus.api.START
+      --es auth <token>` (drop-in builds use `moe.shizuku.privileged.api.START`).
+      The token is a ONE-TIME SETUP artifact (`SYLVIA_SHIZUKU_AUTH_TOKEN`,
+      cached when the user pairs; invalid tokens raise a notification, so the
+      token must be exact — constant-time compare in the receiver).
+   b. **Tasker task** (`Sylvia Shizuku Start` over Tasker HTTP :1821, when
+      Tasker is present): the ShizukuPlus first-party Locale/Tasker plugin
+      action (`com.twofortyfouram.locale.intent.action.FIRE_SETTING`) or an
+      intent task; for STOCK Shizuku this is the only automatable path besides
+      UI-launch.
+   c. **UI-launch fallback** — `am start` the app's start activity
+      (`StarterActivity`/`.MainActivity`): may need one user tap; report state
+      honestly rather than pretending success.
+3. **ADB fallback up** (tier-2 failed) — existing machinery: nodaemon server
+   bootstrap + loopback connect. **While the fallback is up**, run the one
+   *definitive* headless kickstart through it:
+   `adb shell sh /sdcard/Android/data/moe.shizuku.privileged.api/start.sh --apk=<sourceDir>`
+   (research verdict: this — or root — is the only start path that works with
+   ZERO taps when pairing still holds).
+4. **Teardown** — while on the fallback, re-probe Shizuku each ladder pass;
+   when alive again: `adb kill-server` (in-device), drop the loopback, update
+   state. Fallback is never left running alongside a healthy Shizuku.
+
+### 19.2 Ownership, state, knobs
+
+- The **daemon** owns the ladder: `POST /api/transport/ensure` (probe + ladder
+  pass + returns the active channel) and `~/.sylvia/transport.json`
+  `{kind: shizuku|adb, tier, since, lastProbe}` for observability. Rationale:
+  Tasker's HTTP API is reachable from the daemon without any shell, and
+  Termux can fire exported intents as its own uid — tier-2 needs neither the
+  shell nor the MCP layer.
+- **sylvia-mcp** tools ask the daemon first; if the daemon is unreachable they
+  degrade to today's local adb bootstrap (already built + tested).
+- **Detection** (netdetect): transport=shizuku ⇒ tier-0 `ip route get` runs as
+  shell uid directly (the netlink-denied chain and auto-serial machinery
+  become fallback-only — shell uid binds netlink natively, and there is no
+  serial/server concept at all); tier-1 dumpsys likewise via rish.
+- Env: `SYLVIA_SHIZUKU_AUTH_TOKEN`, `SYLVIA_SHIZUKU_RISH` (path to the exported
+  rish script), `SYLVIA_SHIZUKU_KICKSTART_TASK` (Tasker task name).
+- Setup (README, once): install ShizukuPlus → pair wireless debugging → start →
+  export rish (`RISH_APPLICATION_ID=com.termux`) → cache the START auth token →
+  grant permission + disable battery optimization for Termux/Shizuku (else the
+  5s binder handshake times out). Note: stock Shizuku exposes NO start
+  broadcast — tier-2 then reduces to Tasker/UI-launch. Ports change per reboot
+  unless TCP mode; one auth dialog per boot on Plus.
+
+### 19.3 Limits accepted (from research, 2026-10-19)
+
+- Once per boot, something must re-trigger start (Plus's Watchdog/boot
+  receiver helps but adb-mode still needs wireless-debugging state intact).
+- The auth token + pairing are once-ever setup artifacts.
+- Not achievable: fully headless start with STOCK Shizuku from a cold daemon.
