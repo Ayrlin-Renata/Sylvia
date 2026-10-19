@@ -305,3 +305,55 @@ test("detect: adbAutoSerial off → no devices probe, legacy serialArgs behavior
 	const s = await detect(baseCfg, runFn);
 	assert.equal(s.source, "tier0+netpolicy");
 });
+
+// --- Shizuku transport mode (§19): shell uid via rish ------------------------
+// When the ladder's state file says Shizuku is alive, tier-0 (and tier-1)
+// run as SHELL uid through rish — no bare `ip`, no adb server, no serial
+// resolution. Any rish failure falls through to the old chain untouched.
+
+const SHIZUKU_RISH_ROUTE = {
+	code: 0,
+	stdout: "1.1.1.1 via 10.0.2.2 dev wlan0 table 1016 src 10.0.2.16 uid 2000\n",
+	stderr: "",
+	spawnError: false
+};
+
+test("detect: transport=shizuku → tier0 via rish, zero adb/bare-ip side effects", async () => {
+	const runFn = fakeRun({}); // throws on ANY call — proves nothing else ran
+	const asked = [];
+	const s = await detect(
+		{ ...baseCfg, shizukuRishPath: "/data/data/com.termux/files/rish/rish" },
+		runFn,
+		undefined,
+		{
+			transportState: { kind: "shizuku", alive: true },
+			rishRun: async (cfg, cmd) => {
+				asked.push(cmd);
+				if (cmd.startsWith("ip route get")) return SHIZUKU_RISH_ROUTE;
+				return { code: 1, stdout: "", stderr: "unavailable", spawnError: false };
+			}
+		}
+	);
+	assert.equal(asked[0], "ip route get 1.1.1.1", "tier0 asked as shell uid");
+	assert.equal(s.source, "tier0-shizuku-inference", "rish dumpsys failed → tier0 inference");
+	assert.equal(s.transport, "wifi");
+	assert.equal(s.metered, false);
+});
+
+test("detect: transport=shizuku but rish broken → falls back to the old chain", async () => {
+	const runFn = fakeRun({
+		"route get 1.1.1.1": { stdout: "1.1.1.1 dev rmnet_data0 src 10.1.2.3\n" },
+		"shell dumpsys netpolicy": { stdout: "  mMeteredIfaces=[rmnet_data0]\n" }
+	});
+	const s = await detect(
+		{ ...baseCfg, shizukuRishPath: "/x/rish" },
+		runFn,
+		undefined,
+		{
+			transportState: { kind: "shizuku" },
+			rishRun: async () => ({ code: 124, stdout: "", stderr: "timeout", spawnError: false })
+		}
+	);
+	assert.equal(s.source, "tier0+netpolicy", "old chain intact after rish failure");
+	assert.equal(s.metered, true);
+});

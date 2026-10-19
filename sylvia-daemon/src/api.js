@@ -56,9 +56,10 @@ async function readJsonBody(req, limitBytes = 64 * 1024) {
  * @param {import("./modules.js").ModuleManager} [deps.modules]  module manager (§9)
  * @param {ReturnType<import("./discover.js").createDiscoverer>} [deps.discover]  LAN discovery (§7)
  * @param {ReturnType<import("./harness.js").createHarnessControl>} [deps.harness]  harness restart (control panel)
+ * @param {ReturnType<import("./transport.js").createTransport>} [deps.transport]  Shizuku transport ladder (§19)
  * @returns {http.RequestListener}
  */
-export function createApi({ config, netgate, getNetstate, getMeta, registry, modules, discover, harness }) {
+export function createApi({ config, netgate, getNetstate, getMeta, registry, modules, discover, harness, transport }) {
 	const serveStatic = makeStaticHandler();
 	return async (req, res) => {
 		const url = new URL(req.url, "http://127.0.0.1");
@@ -88,6 +89,19 @@ export function createApi({ config, netgate, getNetstate, getMeta, registry, mod
 			if (req.method === "POST" && p === "/api/dsh/restart") {
 				if (!harness) return send(res, 501, { ok: false, error: "harness control unavailable in this build" });
 				return send(res, 200, await harness.restart());
+			}
+
+			// ---- transport ladder (§19) --------------------------------------
+			// GET = last persisted state (cheap, no side effects).
+			// POST ensure = one ladder pass: probe → kickstart → adb fallback
+			// (+ teardown of a leftover fallback once Shizuku is healthy).
+			if (transport) {
+				if (req.method === "GET" && p === "/api/transport") {
+					return send(res, 200, await transport.state());
+				}
+				if (req.method === "POST" && p === "/api/transport/ensure") {
+					return send(res, 200, await transport.ensure());
+				}
 			}
 
 			// ---- network -----------------------------------------------------

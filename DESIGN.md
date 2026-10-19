@@ -867,3 +867,49 @@ same-day, 1.4k stars; theDJchi's own build is maintenance-paused).
   receiver helps but adb-mode still needs wireless-debugging state intact).
 - The auth token + pairing are once-ever setup artifacts.
 - Not achievable: fully headless start with STOCK Shizuku from a cold daemon.
+
+### 19.4 Live verification (AVD, Shizuku+ 13.6.0.r2551, 2026-10-19)
+
+Implemented: `sylvia-daemon/src/transport.js` (`createTransport` →
+`probe/ensure/state/probeOnly/teardown`), routes `GET /api/transport` +
+`POST /api/transport/ensure`, boot pass on daemon start
+(`SYLVIA_TRANSPORT_ENSURE_ON_BOOT`, default true), config knobs in
+`config.js` (`shizukuRishPath/RishAppId/Package/AuthToken/KickstartTask/
+ProbeTimeoutMs/SettleMs/LibDir`, `adbTarget`, `unzipPath`), and netdetect's
+Shizuku mode (below). Every path was exercised live:
+
+- **probe** — `rish -c id` ≤6s; grant survives full server restarts.
+  Two live fixes: (1) the loader flushes child output to **either** stream
+  nondeterministically (`id`/route lines sometimes arrive on stderr) →
+  probe + tier-0/1 parsing use the **merged blob**; (2) server warmup after
+  the starter lags 10s (fast) to ~25s (under concurrent rish load) →
+  `probeUntilAlive(45s)` polling instead of settle+single-probe (a single
+  probe once reported "exhausted" for a server that came up seconds later).
+- **2a token broadcast** — receiver fires from the Termux uid but REQUIRES
+  `--es auth <token>` (garbage token → HIGH-priority invalid-auth notif) →
+  gated on `SYLVIA_SHIZUKU_AUTH_TOKEN`, skipped honestly when unset.
+- **2c UI-launch** — `StarterActivity` from background: observed both
+  BAL-blocked AND success on the AVD depending on caller state → kept as a
+  best-effort attempt with an honest failure note (it IS the boot-time
+  reviver when it succeeds).
+- **3 adb fallback (workhorse)** — nodaemon adb bootstrap → `adb connect
+  127.0.0.1:5555` → `unzip -d` `lib/<abi>/libshizuku.so` out of the
+  installed APK (cached `~/.sylvia/lib/shizuku-starter-<abi>`) → `adb push
+  /data/local/tmp/sylvia-shizuku-starter` → run `--apk=<base.apk>` as
+  shell uid → poll-probe. **Live: ok, tier 3, starter pid, ~33s wall.**
+  Trap: pass the command as ONE `adb shell` argument — adbd joins argv
+  with spaces, so `shell sh -c "chmod 755 x && …"` arrived as broken
+  `sh -c chmod 755 x` ("chmod: Need 2 arguments").
+- **4 teardown** — next ensure with Shizuku alive + `fallbackUp` → `adb
+  kill-server` + disconnect → `fallbackUp:false` (live-verified).
+- **netdetect Shizuku mode** — with `transport.json.kind=shizuku`, tier-0
+  `ip route get` AND tier-1 `dumpsys {netpolicy,connectivity}` run via rish
+  as shell uid (native netlink, zero adb-server side effects); live source
+  `tier0-shizuku+connectivity`. Any rish failure falls through to the old
+  chain (unit-tested both directions). Serial resolution is skipped
+  entirely in this mode.
+- **Termux quirk**: a piped `run-as … sh` script dies silently after any
+  statement that follows a rish invocation — run rish last (or in its own
+  call). Node `execFile` callers are unaffected.
+- Tests: `test/transport.test.mjs` (9) + netdetect Shizuku-mode (2) →
+  daemon suite 124/124. `unzip` added to install.sh base packages.

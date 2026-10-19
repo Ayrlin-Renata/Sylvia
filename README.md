@@ -79,7 +79,8 @@ re-run the same command.
    specifically, because the `pkg` wrapper needs that curl), then installs anything missing:
    `nodejs-lts`, `git`, `bash`, `tmux`, `android-tools` (provides
    `adb`), `rclone`, `uv`, `nmap`, `iproute2` (provides `ip`, used for network detection),
-   `python` (interpreter for `uv`/`uvx` → mitmproxy), `termux-api` (the `termux-*` CLI
+   `python` (interpreter for `uv`/`uvx` → mitmproxy), `unzip` (extracts Shizuku's starter binary for the §6 transport ladder),
+    `termux-api` (the `termux-*` CLI
    stubs, e.g. `termux-wake-lock` — **CLI half only; the Termux:API app is yours to
    install**, see §1).
 2. **DSH CLI + mobile/Android patches** — clones your
@@ -365,6 +366,42 @@ the emulator's Termux, giving 1:1 code parity with zero risk to your phone. Boot
 and **Logcat** to watch the agent's file writes and intent broadcasts before deploying to
 hardware. The installer is device-agnostic, so no emulator-specific branch is needed.
 
+### Shizuku transport ladder (recommended, optional)
+
+The daemon can drive the device through **Shizuku** instead of the raw loopback: a
+shell-uid (`uid=2000`) bridge that binds netlink natively and needs **no adb server at
+all** for detection. Recommended build: **[Shizuku+ (thejaustin/ShizukuPlus)](https://github.com/thejaustin/ShizukuPlus)**
+— a heavily-maintained fork that, unlike stock Shizuku, exposes a programmatic START
+broadcast. Shizuku stays **optional**: with none installed, everything below degrades to
+the loopback above.
+
+One-time setup on the phone:
+
+1. Install **Shizuku+** (GitHub/F-Droid APK) and start it via **Wireless debugging**
+   (pair once — the app remembers it).
+2. Export **rish** from the app and copy `rish` + `rish_shizuku.dex` into
+   `/data/data/com.termux/files/rish/` (`chmod 400` the dex — Android 14+ refuses to
+   load a writable one).
+3. Run `rish -c id` once from Termux and **approve the authorization prompt** — the
+   grant survives server restarts. (`RISH_APPLICATION_ID=com.termux` is auto-discovered.)
+4. Optional: set `SYLVIA_SHIZUKU_AUTH_TOKEN` (from the Shizuku+ settings) in
+   `start-sylvia.sh` to enable the token-broadcast kickstart; without it the ladder
+   skips that step and says so.
+
+```sh
+# The daemon runs the ladder at boot; query or force a pass any time:
+curl -s http://127.0.0.1:3090/api/transport            # last state: kind/tier/attempts
+curl -s -X POST http://127.0.0.1:3090/api/transport/ensure
+```
+
+Ladder (all headless): **probe** (`rish -c id`, 6s cap) → **kickstart** (token broadcast
+→ UI-launch, best-effort) → **adb fallback** that extracts Shizuku's own `libshizuku.so`
+starter from the installed APK (needs `unzip`, in base packages), runs it as shell uid,
+and polls the probe until the server finishes warming up → **teardown** of the fallback
+once Shizuku answers again. State lives in `~/.sylvia/transport.json`. While Shizuku is
+alive, network detection runs `ip route get`/`dumpsys` **through rish as shell uid**
+(`/api/network` shows `source: tier0-shizuku+…`) — no adb server side effects.
+
 ---
 
 ## 7. The control panel
@@ -453,7 +490,7 @@ bash uninstall.sh --purge
 ```
 
 By default it keeps the generic Termux packages (git, bash, nodejs-lts, rclone, tmux,
-android-tools, uv, nmap, iproute2, python) and any `@deepseek-ai/dsh` install, since those can be shared
+android-tools, uv, nmap, iproute2, python, unzip) and any `@deepseek-ai/dsh` install, since those can be shared
 with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those too.
 
 ## 11. Troubleshooting
@@ -479,6 +516,8 @@ with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those
 | Boot dies with `No usable native binding found for node-addon-require-builtin-android-x64` | Upstream publishes no android build of that binding (and no source in the package). Re-run `install.sh` — `module_native_binding` downloads the prebuilt artifact from this repo's `native/<arch>/` (dlopen + functional verified) or builds it on-device from upstream source (`native/README.md`), then restart the harness. |
 | Selecting a workspace appears to work, then the UI immediately deselects it (no error shown) | The click runs `session.create`, which must mount the `standard` agent preset; the server reply is `agent-preset-invalid … workflow-engine … waiting` and the client reverts silently. Same root cause as above: rc.8-train packages only *peer*-declare their workflow deps (`dsh-workflow`, `dsh-session-telemetry`), so npm never installs them. Re-run `install.sh` (the ambient sweep scans the CLI's nested tree) and restart the harness. |
 | Managed services (mDNS, rclone, …) stay paused long after wifi returns | By design: `resumeOnReconnect` is locked `false` — release is explicit (the gate fails closed and stays closed). Resume from the control panel or `POST http://127.0.0.1:3090/api/netgate/resume`. If the hold re-engages while the network looks fine, check `/api/network` — the daemon's own verdict is the source of truth it gated on. |
+| `POST /api/transport/ensure` → `ladder-exhausted` | Read the `attempts` array — it names the step that failed and why. `starter extraction failed` → `pkg install unzip`. rish probe fails though the app runs → re-run `rish -c id` and approve; check `RISH_APPLICATION_ID=com.termux`. `broadcast` shows `skipped` unless `SYLVIA_SHIZUKU_AUTH_TOKEN` is set (an invalid token makes Shizuku+ raise a HIGH-priority notification, so it is never guessed). |
+| Network `source` is `tier0-adb…`/`denied` although Shizuku works | Detection only routes through rish when `~/.sylvia/transport.json` says `kind: shizuku`. Run `POST /api/transport/ensure` once (or restart the daemon — it probes at boot) and re-check `/api/network`. A rish failure always falls back to the adb chain, so the source name tells you which identity answered. |
 
 ---
 

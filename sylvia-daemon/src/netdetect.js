@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { run } from "./run.js";
 
 // ---------------------------------------------------------------------------
@@ -99,7 +101,7 @@ export async function adbRun(cfg, runFn, args, opts = {}, spawnFn) {
  * Opt-in via cfg.adbAutoSerial (the daemon's config sets it; the explicit
  * SYLVIA_ADB_SERIAL knob still wins).
  */
-async function resolveSerial(cfg, runFn) {
+export async function resolveSerial(cfg, runFn) {
 	if (cfg.adbSerial) return cfg.adbSerial;
 	const r = await runFn(cfg.adbPath, ["devices"], { timeoutMs: 8000 });
 	if (r.spawnError || r.code !== 0) return null;
@@ -202,35 +204,84 @@ export function parseConnectivity(stdout) {
 
 /**
  * Detect current network state. `runFn` is injectable for tests; defaults to
- * the real execFile runner.
+ * the real execFile runner. `opts` (optional) injects the transport ladder's
+ * view + runner for tests — production reads transport.json directly, kept
+ * import-free here so netdetect ⇄ transport never forms a module cycle.
  * @returns {Promise<NetState>}
  */
-export async function detect(cfg, runFn = run, spawnFn = undefined) {
+async function readTransportState(cfg) {
+	try {
+		const raw = await readFile(path.join(cfg.stateDir, "transport.json"), "utf8");
+		return JSON.parse(raw);
+	} catch {
+		return null;
+	}
+}
+
+/** Run a shell command through rish (shell uid) — returns the `run()` shape. */
+function rishSh(cfg, command) {
+	return run(cfg.shizukuRishPath, ["-c", command], {
+		timeoutMs: cfg.shizukuProbeTimeoutMs ?? 6000,
+		env: { ...process.env, RISH_APPLICATION_ID: cfg.shizukuRishAppId || "com.termux" }
+	});
+}
+
+export async function detect(cfg, runFn = run, spawnFn = undefined, opts = {}) {
 	const now = Date.now();
 
-	// --- Tier 0: egress interface ----------------------------------------
-	const r = await runFn(cfg.ipPath, ["route", "get", cfg.ipRouteTarget], {
-		timeoutMs: 5000
-	});
-
-	if (r.spawnError) {
-		// `ip` binary missing entirely (not Termux) — undeterminable.
-		return {
-			transport: cfg.failClosed ? "other" : "other",
-			metered: true, // fail closed
-			validated: null,
-			iface: null,
-			source: "unavailable",
-			tier1Available: false,
-			at: now
-		};
+	// --- Tier 0 via Shizuku (§19): shell uid, zero adb-server side effects --
+	// When the ladder reports Shizuku alive, `ip route get` runs as shell
+	// through rish — shell binds netlink NATIVELY, so the Termux-uid
+	// denied-chain (and its adb identity-retry) below becomes pure fallback.
+	// Any rish failure falls through to the old chain untouched.
+	let route = null;
+	let tier0 = "tier0"; // source prefix; "tier0-adb"|"tier0-shizuku" when relocated
+	const tstate = opts.transportState !== undefined
+		? opts.transportState
+		: await readTransportState(cfg);
+	if (cfg.shizukuRishPath && tstate && tstate.kind === "shizuku") {
+		const rish = opts.rishRun ?? ((c, a) => rishSh(c, a));
+		const tr = await rish(cfg, `${cfg.ipPath} route get ${cfg.ipRouteTarget}`);
+		if (!tr.spawnError && (tr.code ?? 1) === 0) {
+			// rish's loader flushes the child's output to EITHER stream
+			// nondeterministically (banner and route line may both arrive on
+			// stderr) — parse the merged blob, not stdout alone.
+			const parsed = parseIpRoute(`${tr.stdout ?? ""}\n${tr.stderr ?? ""}`, "", 0);
+			if (parsed.iface) {
+				route = parsed;
+				tier0 = "tier0-shizuku";
+			}
+		}
 	}
 
-	let route = parseIpRoute(r.stdout, r.stderr, r.code ?? 0);
-	let tier0 = "tier0"; // source prefix; "tier0-adb" when asked as adbd
+	// --- Tier 0: egress interface (bare Termux uid) -------------------------
+	if (!route) {
+		const r = await runFn(cfg.ipPath, ["route", "get", cfg.ipRouteTarget], {
+			timeoutMs: 5000
+		});
+
+		if (r.spawnError) {
+			// `ip` binary missing entirely (not Termux) — undeterminable.
+			return {
+				transport: cfg.failClosed ? "other" : "other",
+				metered: true, // fail closed
+				validated: null,
+				iface: null,
+				source: "unavailable",
+				tier1Available: false,
+				at: now
+			};
+		}
+
+		route = parseIpRoute(r.stdout, r.stderr, r.code ?? 0);
+	}
+
 	// Serial for EVERY adb call below: explicit knob wins, else auto-pick the
 	// first live transport (a multi-transport server breaks bare adb calls).
-	const serial = cfg.adbAutoSerial ? await resolveSerial(cfg, runFn) : (cfg.adbSerial || null);
+	// Pure-Shizuku mode skips resolution entirely (no adb server side effects).
+	const serial = tier0 === "tier0-shizuku"
+		? null
+		: (cfg.adbAutoSerial ? await resolveSerial(cfg, runFn) : (cfg.adbSerial || null));
 	const serialArgs = serial ? ["-s", serial] : [];
 
 	// Netlink denied (Termux app uid): the verdict is UNKNOWN, not offline.
@@ -299,14 +350,26 @@ export async function detect(cfg, runFn = run, spawnFn = undefined) {
 		};
 	}
 
-	// --- Tier 1: adb dumpsys (best-effort; degrade to Tier-0 inference) ---
+	// --- Tier 1: dumpsys (best-effort; degrade to Tier-0 inference) ---------
+	// Shell for `dumpsys <service>`: rish (shell uid, NO adb server — the
+	// same identity the adb chain used, just reached differently) when
+	// tier-0 answered through Shizuku, else the self-bootstrapping adb path.
+	const rish = opts.rishRun ?? ((c, a) => rishSh(c, a));
+	const tier1Shell = tier0 === "tier0-shizuku"
+		? async (service) => {
+			const tr = await rish(cfg, `dumpsys ${service}`);
+			// Same dual-stream quirk as tier-0: merge before parsing.
+			return { ...tr, stdout: `${tr.stdout ?? ""}\n${tr.stderr ?? ""}` };
+		}
+		: (service) => adbRun(cfg, runFn, [...serialArgs, "shell", "dumpsys", service], {
+			timeoutMs: cfg.adbTimeoutMs
+		}, spawnFn);
+
 	let metered = transport === "cellular"; // fallback inference: cellular⇒metered, wifi/other⇒unmetered
 	let source = `${tier0}-inference`;
 
-	if (cfg.adbPath) {
-		const np = await adbRun(cfg, runFn, [...serialArgs, "shell", "dumpsys", "netpolicy"], {
-			timeoutMs: cfg.adbTimeoutMs
-		}, spawnFn);
+	if (tier0 === "tier0-shizuku" || cfg.adbPath) {
+		const np = await tier1Shell("netpolicy");
 		if (!np.spawnError && np.code === 0) {
 			base.tier1Available = true;
 			const meteredIfaces = parseMeteredIfaces(np.stdout);
@@ -315,9 +378,7 @@ export async function detect(cfg, runFn = run, spawnFn = undefined) {
 				source = `${tier0}+netpolicy`;
 			} else {
 				// netpolicy answered but didn't name our iface — try connectivity.
-				const conn = await adbRun(cfg, runFn, [...serialArgs, "shell", "dumpsys", "connectivity"], {
-					timeoutMs: cfg.adbTimeoutMs
-				}, spawnFn);
+				const conn = await tier1Shell("connectivity");
 				if (!conn.spawnError && conn.code === 0) {
 					const parsed = parseConnectivity(conn.stdout);
 					if (parsed) {

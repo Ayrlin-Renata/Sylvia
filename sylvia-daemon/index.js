@@ -15,6 +15,7 @@ import { Registry } from "./src/registry.js";
 import { ModuleManager } from "./src/modules.js";
 import { createDiscoverer } from "./src/discover.js";
 import { createHarnessControl } from "./src/harness.js";
+import { createTransport } from "./src/transport.js";
 import path from "node:path";
 
 const log = makeLog();
@@ -73,6 +74,9 @@ export async function main(env = process.env) {
 		modules.checkRestarts().catch((e) => log("restart pass failed:", String(e)));
 	}, 30_000).unref();
 
+	// Shizuku transport ladder (§19) — probe/kickstart/fallback/teardown.
+	const transport = createTransport(config);
+
 	const api = createApi({
 		config,
 		netgate,
@@ -80,6 +84,7 @@ export async function main(env = process.env) {
 		modules,
 		discover: createDiscoverer(config, registry, async () => watcher.getLastState() ?? (await watcher.tick(), watcher.getLastState())),
 		harness: createHarnessControl({ config }),
+		transport,
 		getNetstate: async () => watcher.getLastState() ?? (await watcher.tick(), watcher.getLastState()),
 		getMeta: () => ({
 			uptimeMs: Date.now() - startedAt,
@@ -93,6 +98,18 @@ export async function main(env = process.env) {
 	log(`listening on http://${config.host}:${config.port} (state: ${config.stateDir})`);
 
 	watcher.start();
+
+	// Boot pass of the transport ladder (§19.1): a server that died with the
+	// previous session comes back headless (probe → kickstart → fallback) —
+	// fire-and-forget so a slow fallback never delays API readiness. A device
+	// with no Shizuku resolves quickly to "not installed" and logs once.
+	if (config.transportEnsureOnBoot) {
+		transport.ensure().then((r) => {
+			log(r.ok
+				? `transport: shizuku alive (via ${r.revivedBy ?? "probe"}${r.tier ? `, tier ${r.tier}` : ""})`
+				: `transport: ladder not satisfied (${r.reason ?? "unknown"}${r.detail ? `: ${r.detail}` : ""})`);
+		}).catch((e) => log("transport ensure failed:", String(e)));
+	}
 
 	const shutdown = () => {
 		log("shutting down");

@@ -37,6 +37,36 @@ export function loadConfig(env = process.env) {
 		// ~/.sylvia — JSON only, human-inspectable, daemon is the single writer.
 		stateDir: env.SYLVIA_STATE_DIR || path.join(os.homedir(), ".sylvia"),
 
+		// --- shell transport ladder (§19) ----------------------------------
+		// Shizuku is RECOMMENDED, never required (§19): every step degrades —
+		// probe fails fast when rish is absent, kickstarts are gated, and the
+		// adb loopback fallback remains the working leg.
+		shizukuRishPath: env.SYLVIA_SHIZUKU_RISH ||
+			"/data/data/com.termux/files/rish/rish",
+		// The server authenticates rish callers by UID↔package: the calling
+		// uid must own this package (Termux). Wrong id = silent binder timeout.
+		shizukuRishAppId: env.SYLVIA_SHIZUKU_RISH_APP_ID || "com.termux",
+		// Auto-detect the manager package (ShizukuPlus first, drop-in second)
+		// when unset.
+		shizukuPackage: env.SYLVIA_SHIZUKU_PACKAGE || "",
+		// ONE-TIME setup artifact (§19.2): the START broadcast's `auth` extra.
+		// Invalid tokens raise a HIGH-priority notification, so the ladder
+		// skips tier-2a entirely when unset instead of spraying bad tokens.
+		shizukuAuthToken: env.SYLVIA_SHIZUKU_AUTH_TOKEN || "",
+		// Reserved for Tasker-based kickstart (§19.2 step 2b) — Tasker task
+		// name fired over its HTTP API when configured.
+		shizukuKickstartTask: env.SYLVIA_SHIZUKU_KICKSTART_TASK || "",
+		shizukuProbeTimeoutMs: int(env.SYLVIA_SHIZUKU_PROBE_TIMEOUT_MS, 6000),
+		shizukuSettleMs: int(env.SYLVIA_SHIZUKU_SETTLE_MS, 3500),
+		// Where the extracted libshizuku starter (per-ABI) is cached.
+		shizukuLibDir: env.SYLVIA_SHIZUKU_LIB_DIR ||
+			path.join(env.SYLVIA_STATE_DIR || path.join(os.homedir(), ".sylvia"), "lib"),
+		// First-use extraction needs Termux `unzip` (base packages install it).
+		unzipPath: env.SYLVIA_UNZIP_PATH || "unzip",
+		// Run one ensure() pass at boot so a server that died with the
+		// previous session comes back without agent involvement (§19 goal).
+		transportEnsureOnBoot: bool(env.SYLVIA_TRANSPORT_ENSURE_ON_BOOT, true),
+
 		// --- detection -----------------------------------------------------
 		// Tier 0: `ip route get <target>` — unprivileged, sub-ms, answers where
 		// THIS uid's packets egress (wlan* = wifi, rmnet*/ccmni*/apn*/wwan* =
@@ -56,6 +86,10 @@ export function loadConfig(env = process.env) {
 		adbHost: env.SYLVIA_ADB_HOST || "127.0.0.1",
 		adbPort: int(env.SYLVIA_ADB_PORT, 0), // 0 = don't force `adb connect`
 		adbTimeoutMs: int(env.SYLVIA_ADB_TIMEOUT_MS, 6000),
+		// Transport-ladder fallback target (§19 step 3): where the in-device
+		// adb client connects to reach the device's own adbd as shell uid.
+		// Emulator: 5555 (tcpip mode); physical: wireless-debugging port.
+		adbTarget: env.SYLVIA_ADB_TARGET || "127.0.0.1:5555",
 		// FAIL CLOSED (locked, DESIGN.md §2.1): when we cannot determine the
 		// network at all, report metered:true so gates hold. A false "stop" is
 		// safe; a false "go" costs the user money.

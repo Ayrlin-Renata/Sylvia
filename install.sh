@@ -3,7 +3,7 @@
 #  Sylvia — consolidated agentic-AI harness installer for Android (Termux)
 # =============================================================================
 #  Installs, end to end:
-#    1. Termux base packages     nodejs-lts, git, bash, tmux, android-tools (adb), rclone, uv, nmap, iproute2, python
+#    1. Termux base packages     nodejs-lts, git, bash, tmux, android-tools (adb), rclone, uv, nmap, iproute2, python, unzip
 #    2. DSH Mobile CLI           npm -g @deepseek-ai/dsh
 #    3. Mobile/Android patches   Ayrlin-Renata fork -> CLI + 11 local target-train tarballs
 #    4. sylvia-mcp server        ADB loopback / Tasker XML / rclone JSON / network+resource+discovery
@@ -154,6 +154,7 @@ module_base_packages() {
   have nmap  || missing+=(nmap)            # LAN discovery (daemon discovery_scan tool)
   have ip    || missing+=(iproute2)        # 'ip' binary — daemon Tier-0 network detection
   have python || missing+=(python)         # uv/uvx interpreter (mitmproxy CLI + mitmproxy-mcp)
+  have unzip || missing+=(unzip)           # lift libshizuku.so out of the Shizuku APK (transport ladder tier-3)
   # termux-api = the termux-* CLI stubs (termux-wake-lock etc.). The companion
   # Termux:API *app* (F-Droid) is a separate manual install; without it the
   # stubs are present but no-ops, which is harmless.
