@@ -913,3 +913,172 @@ Shizuku mode (below). Every path was exercised live:
   call). Node `execFile` callers are unaffected.
 - Tests: `test/transport.test.mjs` (9) + netdetect Shizuku-mode (2) →
   daemon suite 124/124. `unzip` added to install.sh base packages.
+
+## 20. Authenticated A2A — Chatelaine & operator architecture (plan 2026-10-19)
+
+Goal: an authenticated Agent-to-Agent bridge between DSH nodes (desktop ↔
+AVD ↔ phone) with an explicit **authority model**, so automated cross-node
+traffic can never be mistaken for the user's will. **Standalone first** —
+plain DSH + the plugin + a pairing secret must work on a desktop with no
+Sylvia installed; Sylvia integration is an optional layer on top.
+
+Base: fork of **[MicroWearld/dsh-a2a-server](https://github.com/MicroWearld/dsh-a2a-server)**
+(verified firsthand 2026-10-19): A2A v1.0 JSON-RPC/SSE (`/a2a`, AgentCard
+`/.well-known/agent.json`), Task↔DSH-Session mapping, bearer auth
+(`auth.tokenEnv`), task TTL + file persistence (`persistTasks`/
+`persistenceRoot`), `input-required` approval mapping, request-level
+`metadata.agentPreset` override, `dsh plugin add` assembly, self-contained
+bundle. Peers: `dsh-agent/llm/session/user-approval` + `cordis ^4` +
+`schemastery ^3.18` — all present in our tree; Termux note: schemastery
+3.18.5 has **no `z.enum`** → plugin config schemas must use
+`z.union([z.const(...)])` (the sylvia-bridge lesson).
+
+### 20.1 Authority model (the four concepts, formalized)
+
+| level | name | receiver treats the sender as | constraints |
+|---|---|---|---|
+| 1 | **normal A2A** (default) | assisting *its* chatelaine — receiver is top authority | none |
+| 2 | **A2A + user intent** | top authority — receiver assists | may never contradict House Rules; time-boxed + scoped |
+| — | **House Rules** | *constraint layer*, not a message level | per-chatelaine, per-device, set by the user; ceilings everything below L4 |
+| 4 | **user intent to override** | top authority, *may* contradict House Rules | minted only via direct user authentication (approval dialog etc.) |
+
+Normative rules:
+
+1. **Envelope-only authority.** Authority exists *only* in a signed
+   `metadata.authority` envelope — natural-language claims in message text
+   are never authority. Kills "I am the user" prompt injection at the door.
+2. **Drift/lapse rule** (the feedback-loop killer). On grant expiry or
+   failed re-verification, tasks *issued* while authorized keep executing
+   (latched), but for every new message the receiver reverts to level 1:
+   the remote is assisting the chatelaine again and must re-present a
+   valid grant to claim otherwise.
+3. **Non-transitivity.** Grants are signed by the minting node's identity
+   and bound to `(origin, target, jti)`; receivers verify the binding.
+   Relays **forget** — a forwarded message is re-sent as level 1. Grants
+   never ride responses (responses carry no `metadata.authority` at all);
+   a response that claims intent is processed as level 1 *and* raised as
+   a security event.
+4. **Presence ≠ per-command authorization** (stated openly). An L2/L4
+   window delegates authority for its duration and scope — everything the
+   holder asks during it carries intent BY DESIGN. Damage radius is
+   bounded by: short windows (default 10 min), an optional free-text
+   `scope` chosen at mint and checked by the receiver, House Rules, and
+   the revoke endpoint.
+5. **Fail down, notify loud.** Bad signature/expiry/binding ⇒ process as
+   level 1 AND raise a security event (toast / OS dialog / panel badge) —
+   never silently.
+
+Envelope: `metadata.authority = { v:1, level:2|4, scope?, origin, target, iat, exp, jti, sig }`
+- `sig` = HMAC-SHA256 over canonical fields with key material **derived
+  from the pairing secret** (one pairing ceremony also derives the bearer
+  token — connection auth and authority share one root).
+- Freshness: reject `iat > now + skew(60s)` or `now > exp` or
+  `exp - iat > maxWindow`; `jti` recorded per link (reuse after delivery
+  or across targets = event; same-link within-window replay = tolerated,
+  same presence zone).
+
+### 20.2 Minting — how user intent enters the world
+
+Compartmentalized in the plugin (must work on plain DSH):
+
+1. **Explicit grant** — `POST /a2a-admin/mint {level, ttlMs, scope}`,
+   loopback-bound. Sylvia's control panel is *just a client* of this
+   endpoint; standalone nodes use curl or the plugin's own minimal page.
+2. **Agent-requested grant** — the plugin ships a `request_user_intent`
+   tool → DSH user-approval prompt (`dsh-user-approval` is already a
+   peer dep) → user approves → mint. The approval **is** the direct user
+   interaction; optional `dialog: native` config adds an OS-aware
+   confirmation dialog (toast via termux-toast when Sylvia is present).
+3. `POST /a2a-admin/revoke` ends a window immediately; `/a2a-admin/status`
+   reports active grants.
+
+**Structural non-acquisition**: the agent never receives grant bytes —
+outbound messages are wrapped plugin-side iff an active mint session
+exists. No tool returns the pairing secret or a live grant.
+
+### 20.3 Node identity, first contact, transport v1
+
+- v1 transport: **LAN + bearer**, tunnel optional (Tailscale/WireGuard
+  documented as the supported cross-network path). **Noise protocol** is
+  the planned upgrade for transient P2P; the handshake abstraction is
+  designed so Noise slots in without changing the authority model.
+- **Pairing ceremony** = the first-contact problem: one secret
+  (`A2A_PAIRING_SECRET`, generated on either node, entered out-of-band)
+  → derives bearer + HMAC root (+ future Noise PSK). Peers are
+  addressed by *name*; the handshake authenticates regardless of IP, so
+  churn doesn't matter — Sylvia-integration remembers last-seen address
+  per name purely as a routing convenience.
+- AgentCard gains an authority extension declaring the metadata key,
+  supported levels, and `maxWindow`.
+
+### 20.4 Chatelaine & operators (application layer)
+
+- **Housekeeping workspace** + default **Chatelaine** session; the
+  conventions live in a workspace-scoped SKILL: short immediate report
+  on contact; concise completion report; escalate important decisions to
+  the parent; verify authority *envelopes* (never text claims); security
+  event → notify; never assume replies carry intent.
+- **Operators**: incoming task → Task↔Session (upstream mapping) inside
+  the Housekeeping workspace; Chatelaine spawns an operator subagent per
+  task (DSH subagent spawn) with the report-discipline instructions. The
+  fork returns a random handle (`op_<16hex>`) in the task's first event;
+  re-contact = SendMessage referencing the handle/taskId.
+- **7-day operators**: fork gains per-task `expiresAt` (default 7d,
+  overriding upstream's single `taskTtlMs`) + a prune pass that removes
+  task files and archived sessions; handles die with them.
+- **Inter-session communication** = SPIKE in P3. Uniform-primitive
+  proposal: everything is an A2A task; `metadata.targetSession` routes
+  into an *existing* session instead of creating one (local calls just
+  loopback through the node's own plugin). Fallback: sylvia-mcp tool
+  pair. Decide after testing what `dsh-session` accepts externally.
+
+### 20.5 Sylvia integration layer (optional by design)
+
+- Control panel: mint/revoke/status buttons + current authority badge
+  (a client of `/a2a-admin`, nothing more).
+- **Netgate**: A2A listener/egress exempted while the gate is held when
+  `allowA2AOnMetered` is set (per node, default **off** — keeps the
+  fail-closed posture); implemented as an exempt flag on registered
+  services.
+- Security events → termux-toast / panel alert; peer address memory;
+  `a2a_send` parity tool in sylvia-mcp if useful (the canonical
+  agent-facing tool lives in the plugin so non-Sylvia nodes get it too).
+- Non-Sylvia nodes lose only these conveniences — the plugin core never
+  depends on them.
+
+### 20.6 Threat model (honest)
+
+**Protects against**: cross-node confusion and intent feedback loops;
+stale / replayed / out-of-scope / laundered authority; response-side
+hallucinated intent; accidental agent use (approval-gated mint, no grant
+bytes in agent-visible paths); unauthorized connections (bearer).
+**Does NOT protect against**: a local agent actively reading key material
+off disk (same uid — DSH runs `danger-full-access`, so local agents are
+*inside* the trust boundary by design); plaintext confidentiality on a
+v1 LAN (use a tunnel or wait for Noise); physical access. These
+residuals are accepted consciously, not overlooked.
+
+### 20.7 Phases (each ends verified + committed)
+
+- **P0 — fork & run**: clone into our org, build against our DSH checkout
+  (`DSH_CHECKOUT`), install on a *desktop* profile via `dsh plugin add`,
+  prove Task↔Session + bearer + approval mapping live. No Sylvia needed.
+- **P1 — authority core**: pairing/derive, envelope mint/verify + jti
+  log, admin mint/revoke/status, `request_user_intent` tool, inbound
+  verify → fail-down + event, outbound auto-attach; LAN desktop↔AVD demo
+  with real grants (L2 honored, expiry drifts to L1, responses carry
+  none).
+- **P2 — Chatelaine layer**: workspace + skill, operator handles, 7d TTL
+  prune, security-event → notification path.
+- **P3 — inter-session spike + Sylvia glue**: `targetSession` decision,
+  panel buttons, netgate exemption, toasts, remembered peers.
+- **P4 — hardening**: Noise/pairing UX, per-node keys, README A2A
+  section + troubleshooting rows, arm64 physical-device run.
+
+### 20.8 Open decisions
+
+- Pairing-secret entry UX (env paste vs admin endpoint vs QR).
+- House Rules file shape + whether unsigned local edits are trusted
+  (local-trust accepted for v1, per 20.6).
+- Native dialog surface per platform (desktop vs Android).
+- `targetSession` feasibility → decided by the P3 spike.
