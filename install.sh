@@ -477,7 +477,7 @@ module_dsh_patch() {
     specs+=("$inst_dir/deepseek-ai-${sib}-${tgz_ver}.tgz")
   done
 
-  local i
+  local i legacy_used=0
   note "installing $cli_spec + ${#dsh_siblings[@]} local $tgz_ver tarballs (one npm call each)"
   for i in "${!specs[@]}"; do
     # Only the LOCAL tarball specs are file paths — the CLI spec (specs[0]) is a
@@ -501,11 +501,40 @@ module_dsh_patch() {
       # --legacy-peer-deps skips that peer reconciliation and lands the package. This
       # ONLY applies to the one package that failed; the rest install normally with
       # peers resolved. Retry once, then verify on disk.
+      #
+      # DANGER (verified 2026-10-19): legacy mode IGNORES peerDependencies and
+      # reifies the global tree from its root specs, which PRUNES nested peers the
+      # CLI depends on (@deepseek-ai/dsh-session, dsh-session-persistence, cordis,
+      # …) — the package then lands but fails to import and a dozen plugins go
+      # inactive. So remember that we used it and repair afterwards.
       npm_config_ignore_scripts=1 npm install --global --legacy-peer-deps "${specs[$i]}" >/dev/null 2>&1 || true
+      legacy_used=1
     fi
     [ -f "$GMP/${dirs[$i]}/package.json" ] \
       || die "npm install -g did not produce $GMP/${dirs[$i]} — the package is genuinely broken (re-run to retry)."
   done
+
+  # Repair pass for the legacy-peer-deps fallback above: reinstalling the CLI spec
+  # restores the nested peers that legacy mode pruned (and re-nests stock copies of
+  # the fork packages, which the prune below removes again — same end state as a
+  # clean install). Then PROVE the repair: resolving a nested peer from the CLI must
+  # work, or the harness boots into a wall of "could not be resolved".
+  if [ "$legacy_used" = 1 ]; then
+    note "repairing the global tree after a legacy-peer-deps fallback (legacy mode prunes nested peers)"
+    npm_config_ignore_scripts=1 npm install --global "$cli_spec" >/dev/null 2>&1 || true
+    _prune_nested_fork_copies "$GMP" "${dsh_siblings[@]}"
+    node -e '
+      const { createRequire } = require("node:module");
+      const req = createRequire(process.argv[1] + "/package.json");
+      for (const id of ["@deepseek-ai/dsh-session", "@deepseek-ai/dsh-session-persistence"]) {
+        try { req.resolve(id); } catch (error) {
+          console.error("cannot resolve " + id + " from the CLI tree: " + error.message);
+          process.exit(1);
+        }
+      }
+    ' "$GMP/dsh" \
+      || die "the global tree is missing nested peers after the legacy-peer-deps fallback — re-run install.sh (it repairs), or npm install --global $cli_spec by hand."
+  fi
 
   local sib2
   for sib2 in dsh "${dsh_siblings[@]}"; do

@@ -1153,4 +1153,27 @@ Fork fix (session-persistence-jsonl, the only real call site): treat *only*
 enforces single-writer — while every other error (including contention →
 `SessionAlreadyOwnedError`) still propagates. Rationale for the fork rather
 than a shim: no extra process, no orphaned lock holders, and the exception is
-provably platform-specific by its error code.
+provably platform-specific by its error code. Verbatim-code match, marker-
+asserted in the fork build (`isFlockUnsupportedPlatform(error)`), and unit-
+tested against EAGAIN/EWOULDBLOCK/EACCES/EPERM/ENOENT/lowercase/`{}`/null.
+
+**Second gap unmasked by the first**: `prompt variable "{{model}}" has no
+value for this assembly`. The `standard` preset's persona prefix interpolates
+`{{model}}`, and nuncia created agents with `agentOptions` built only from
+explicit plugin config — so a request without `model:` died before its first
+turn. nuncia now resolves the selection exactly as `dsh-headless` does
+(`ctx.get('agentDefaultModel').currentSelection()`), with per-request
+`params.metadata.provider|model` as an override and a boot warning when
+nothing resolves.
+
+**P0 ACCEPTANCE (live, AVD)** — `SendMessage` with an empty metadata object:
+`TASK_STATE_COMPLETED`, artifact `"MODEL OK"` from a real model turn, bearer
+required (401 without), task ↔ session 1:1. The bridge is functional.
+
+**Installer hazard recorded** (`install.sh`, fixed): the `--legacy-peer-deps`
+retry that `dsh-terminal-bash`'s 8 peerDependencies forces **reifies the global
+tree and prunes nested peers** (`@deepseek-ai/dsh-session`, `cordis`, …) — the
+package lands but imports fail and a dozen plugins deactivate. The installer
+now tracks when that fallback fired, reinstalls the CLI spec, re-prunes stock
+fork copies, and *proves* a nested peer resolves from the CLI tree, failing
+loudly instead of booting into `could not be resolved`.
