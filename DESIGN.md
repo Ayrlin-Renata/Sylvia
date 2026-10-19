@@ -1106,3 +1106,51 @@ Decided 2026-10-19: authority vocabulary = `peer` / `house` / `intent` /
 paste (`NUNCIA_PAIRING_SECRET`); house rules = single file in a tiny git
 repo with auto-committed history; nuncia gets its own EN + ZH READMEs
 acknowledging MicroWearld's original.
+
+### 20.9 P0 done — ported, installed, live on the AVD (2026-10-19)
+
+**Decision recorded**: rebuild the plugin **without** the upstream build
+scaffold. The `dsh-super-injector` `scripts/build.sh` symlinks `@deepseek-ai/*`
+**sources** out of a local DSH monorepo (`DSH_CHECKOUT` required) and bundles
+everything with tsdown — a full framework dependency for 858 lines of plugin.
+Instead the plugin is now hand-ported plain ESM (`lib/index.js` +
+`lib/task-store.js`), installed as-is, with the protocol layer from
+`@a2a-js/sdk` on npm. Everything light, nothing to build, no checkout.
+
+Verified facts driving that shape:
+
+- `@a2a-js/sdk@1.3.0` on npm, **one** dependency (`jose`) — pure JS, Termux-safe.
+- SDK v1.3 wire names are **PascalCase** (`SendMessage`, not `message/send`),
+  a message nests under `params.message`, and the task comes back as
+  `result.task.{id,status,history}` (v0.3-compat envelope). Roles accept the
+  spec's lowercase `user`/`agent` — the port normalizes them to `ROLE_*`.
+- Ambient imports (resolved at assembly time, symlinked like sylvia-bridge):
+  `@deepseek-ai/dsh-llm`, `@deepseek-ai/dsh-session`. **Plain `schemastery` is
+  NOT ambient** — the host ships `@deepseek-ai/schemastery` (a different
+  package), so the config schema needs the plain package as a real dependency
+  (device check: plain schemastery absent from the entire DSH global tree).
+  Making them `peerDependencies` breaks `npm install` outright: DSH dist-tags
+  are parked at `0.0.1-rc.*` and satisfy no sane range.
+- Registration on the profile is the sylvia-bridge pattern: symlink into
+  `~/.dsh/profiles/web/node_modules/<name>` **and** add a
+  `"<name>": "file:<abs path>"` dependency to the profile `package.json` —
+  the symlink alone left `failed to import: Cannot find package`.
+- `tokenEnv` needs a real `export` in `~/.sylvia/sylvia.env`; a bare
+  `NAME=value` line is not exported into the harness process (cost one boot).
+
+Live evidence (AVD, boot33-35): AgentCard 200 with the preset extension;
+bearer-less POST → 401; admin status counters; `SendMessage` creates a real
+DSH session (`~/.dsh/sessions/…/<taskId>`), and a failed turn now surfaces
+its reason in `status.message`.
+
+**Android platform gap found by that probe** — every new session on the
+alpha.5 tree died with `flock is not supported on android-x64`: the session
+lock calls `@deepseek-ai/node-addon-system`'s `tryLockExclusive`, whose
+loader rejects any platform but `linux`/`darwin` (`ERR_FLOCK_UNSUPPORTED_PLATFORM`),
+and **no android binding is published** (optionalDeps: darwin ×2, linux ×2).
+Fork fix (session-persistence-jsonl, the only real call site): treat *only*
+`ERR_FLOCK_UNSUPPORTED_PLATFORM` as lock-acquired — the daemon already
+enforces single-writer — while every other error (including contention →
+`SessionAlreadyOwnedError`) still propagates. Rationale for the fork rather
+than a shim: no extra process, no orphaned lock holders, and the exception is
+provably platform-specific by its error code.
