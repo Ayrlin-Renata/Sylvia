@@ -119,15 +119,16 @@ re-run the same command.
    detection, netgate (managed-traffic hold/resume), resource registry + policy, LAN
    discovery, module manager, and the web control panel.
 5. **`sylvia-bridge`** — the DSH plugin that monitors network state and pauses/resumes
-   the harness on metered connections (configurable). It also provides the **mobile
-   shell**: a client half (loaded automatically, desktop untouched below the 768px
-   breakpoint) that pins the AppFrame grid, floats the icon rail as a hamburger-driven
-   drawer, and converts the settings dialog into a full-bleed tabs-accordion
-   (menu-first: rail OR content, never both, with a Back pill). On top of that sits
-   the **custom CSS seam**: `~/.sylvia/mobile.css` is inlined into every served index
-   page *after* the plugin's base styles, so layout tweaks are edit → browser
-   refresh → live, with no harness restart. The installer seeds a commented starter
-   file once and never overwrites your edits.
+   the harness on metered connections (configurable). Its **client half** owns ALL
+   base mobile styling (nothing structural is patched at install time): dialog fit,
+   plus a settings tabs-accordion that mirrors the app's own sidebar fold — the
+   section rail is large/full-width while picking a section, then contracts to a
+   52px icon strip beside the content (never both at full size), with a fixed
+   ≡ pill to expand it back. Desktop is untouched (everything is media-scoped
+   below 768px). On top of the plugin's base styles sits the **custom CSS seam**:
+   `~/.sylvia/mobile.css` (seeded EMPTY — user tweaks only) is inlined into every
+   served index page *after* the plugin base, so edits are edit → browser
+   refresh → live, with no harness restart.
 6. **MCP registration** — appends the server entries to
    `~/.dsh/profiles/web/cordis.patch.yml`, each as an `insert:` row (a bare `- id:`
    row is silently skipped by DSH's patch loader). This is **non-destructive**: it
