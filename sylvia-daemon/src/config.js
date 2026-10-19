@@ -28,6 +28,10 @@ export function loadConfig(env = process.env) {
 		// DSH web port — matches the launcher's SYLVIA_WEB_PORT so the
 		// control panel's "Open DSH" button targets the same origin.
 		webPort: int(env.SYLVIA_WEB_PORT, 3080),
+		// Harness entrypoint for the control panel's restart button — the
+		// global CLI install under $PREFIX (Termux convention).
+		dshBinPath: env.SYLVIA_DSH_BIN ||
+			path.join(env.PREFIX || "/data/data/com.termux/files/usr", "lib/node_modules/@deepseek-ai/dsh/lib/bin.js"),
 
 		// --- state ---------------------------------------------------------
 		// ~/.sylvia — JSON only, human-inspectable, daemon is the single writer.

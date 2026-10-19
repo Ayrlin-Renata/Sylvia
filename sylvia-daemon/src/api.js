@@ -55,9 +55,10 @@ async function readJsonBody(req, limitBytes = 64 * 1024) {
  * @param {import("./registry.js").Registry} [deps.registry]  resource registry (§4–§5)
  * @param {import("./modules.js").ModuleManager} [deps.modules]  module manager (§9)
  * @param {ReturnType<import("./discover.js").createDiscoverer>} [deps.discover]  LAN discovery (§7)
+ * @param {ReturnType<import("./harness.js").createHarnessControl>} [deps.harness]  harness restart (control panel)
  * @returns {http.RequestListener}
  */
-export function createApi({ config, netgate, getNetstate, getMeta, registry, modules, discover }) {
+export function createApi({ config, netgate, getNetstate, getMeta, registry, modules, discover, harness }) {
 	const serveStatic = makeStaticHandler();
 	return async (req, res) => {
 		const url = new URL(req.url, "http://127.0.0.1");
@@ -79,6 +80,14 @@ export function createApi({ config, netgate, getNetstate, getMeta, registry, mod
 					stateDir: config.stateDir,
 					webPort: config.webPort ?? 3080
 				}));
+			}
+			// POST /api/dsh/restart — terminate + respawn the harness web
+			// server (fresh token). Fast path: returns once the old process is
+			// gone and the new one is spawned; the panel confirms readiness by
+			// polling /api/dsh-url until the NEW token verifies as accepted.
+			if (req.method === "POST" && p === "/api/dsh/restart") {
+				if (!harness) return send(res, 501, { ok: false, error: "harness control unavailable in this build" });
+				return send(res, 200, await harness.restart());
 			}
 
 			// ---- network -----------------------------------------------------

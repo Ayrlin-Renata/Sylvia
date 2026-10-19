@@ -371,14 +371,16 @@ hardware. The installer is device-agnostic, so no emulator-specific branch is ne
 
 Open **`http://127.0.0.1:3090`** in the phone browser for the Sylvia control panel.
 
-- **Status** — the **Harness card** first (harness up/down, current-token state with
-  source + age, and the **Open DSH ↗** button), then network state (wifi/cellular/none,
-  metered, SSID, WAN IP), netgate status (harness held? managed traffic held?),
-  paused-work count, module status summary, daemon health, manual pause/resume. The
-  Open DSH button is powered by `GET /api/dsh-url`, which re-reads the harness startup
-  log every refresh and hands over the **current** one-time token — so it opens the UI
-  straight through even after clearing browser data, with no hand-copied token URLs
-  (and no stale token after a harness restart).
+- **Status** — the **Harness card** first (state, **Open DSH ↗** and **Restart
+  harness** buttons), then network state (wifi/cellular/none, metered, SSID, WAN IP),
+  netgate status (harness held? managed traffic held?), paused-work count, module status
+  summary, daemon health, manual pause/resume. Open DSH is powered by `GET /api/dsh-url`:
+  it re-reads the harness startup log every refresh, hands over the **current** token,
+  and *proves* it with a real exchange (`verify: accepted|rejected`) — so the link opens
+  straight through even after clearing browser data. **Restart harness**
+  (`POST /api/dsh/restart`) kills the `dsh web` process, truncates the token log and
+  respawns the server; the Open DSH button turns **red (still clickable)** until the NEW
+  token is confirmed accepted, then returns to normal.
 - **Resources** — all ownership/permission configuration: searchable networks/hosts/
   resources table, inline edit owner + gate, "label as mine / as \<person\>", per-type
   rules, prune-now + prune settings.
@@ -470,6 +472,7 @@ with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those
 | Browser shows `Failed to load plugins / web boot: window.__ModuleLoader__ bootstrap facade is missing` | Version skew between the npm-resolved web frontend (rc.8+) and the fork-pinned `dsh-client-modules` (rc.7, predates the facade). Re-run `install.sh` — it aligns `dsh-client-modules` to the frontend version — then hard-refresh the page (Ctrl+F5). |
 | Chat fails with `Failed to load history … maxImageDimension … expected number, received undefined` | `dsh-attachment-local` is missing the `maxImageDimension` key the image-limits projection requires. On the current train the fork tarball carries it upstream — re-run `install.sh`, which *verifies* the feature (and repairs legacy old-train installs in place, keeping the Android fixes), then reload the session. |
 | `EADDRINUSE … 3080` at launch | A previous harness instance is still running — kill the stale `node … bin.js web` process and relaunch. |
+| Harness UI answers `dsh web authentication required` (401) even though the panel shows a token | The browser session is gone and the logged token may be stale. Click **Restart harness** on the Status page: it mints a fresh token, and Open DSH stays red (clickable) until the new token is *verified accepted* — then click it. |
 | Harness not running after a reboot | Termux:Boot autostart isn't active: install the app from F-Droid and **open it once** (the boot receiver registers on first launch), check the seeded script with `ls ~/.termux/boot/`, and re-run `install.sh` if it's missing. |
 | mitmproxy tools missing on first launch | The first `uvx` build is slow — check `~/.sylvia/.mitmproxy-mcp-warm.log`, then re-run `install.sh` (warm build and `patchelf` fixes are idempotent). Reload the MCP servers from the UI if they still don't appear. |
 | Boots into a wall of `plugin(s) failed to load … could not be resolved` (nearly every core plugin) | The registry published a newer DSH train that imports helpers the pinned CLI never declares (`Cannot find package '@deepseek-ai/dsh-timeout'` and friends in the boot log — npm never installs them because nothing declares them). Re-run `install.sh`: the ambient dependency sweep imports every package in the tree, installs each missing package at the matching version, and verifies the sweep is clean. |

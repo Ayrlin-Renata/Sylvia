@@ -14,6 +14,7 @@ import { createApi, startApi, setPersistNetgate } from "./src/api.js";
 import { Registry } from "./src/registry.js";
 import { ModuleManager } from "./src/modules.js";
 import { createDiscoverer } from "./src/discover.js";
+import { createHarnessControl } from "./src/harness.js";
 import path from "node:path";
 
 const log = makeLog();
@@ -78,6 +79,7 @@ export async function main(env = process.env) {
 		registry,
 		modules,
 		discover: createDiscoverer(config, registry, async () => watcher.getLastState() ?? (await watcher.tick(), watcher.getLastState())),
+		harness: createHarnessControl({ config }),
 		getNetstate: async () => watcher.getLastState() ?? (await watcher.tick(), watcher.getLastState()),
 		getMeta: () => ({
 			uptimeMs: Date.now() - startedAt,

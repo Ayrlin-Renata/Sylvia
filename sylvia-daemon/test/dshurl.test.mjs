@@ -63,6 +63,7 @@ test("dshUrl: builds tokened url + metadata, plain url when no token", async (t)
 	assert.equal(withTok.url, "http://127.0.0.1:1/?token=TLA1AAA");
 	assert.equal(withTok.source, "dsh-web.log");
 	assert.equal(withTok.harness, "down");
+	assert.equal(withTok.verify, null, "no probe against a down server");
 	assert.ok(withTok.tokenAgeMs >= 0);
 
 	fs.rmSync(path.join(dir, "dsh-web.log"));
@@ -96,4 +97,69 @@ test("api: GET /api/dsh-url serves the current token", async (t) => {
 	assert.equal(body.token, "ROUTE_OK");
 	assert.equal(body.url, "http://127.0.0.1:1/?token=ROUTE_OK");
 	assert.equal(body.port, 1);
+});
+
+test("api: POST /api/dsh/restart → harness route (and 501 without one)", async (t) => {
+	const { createApi, startApi } = await import("../src/api.js");
+	const { createNetgate } = await import("../src/netgate.js");
+
+	const mk = async (harness) => {
+		const config = { port: 0, host: "127.0.0.1", gateEnabled: true, resumeOnReconnect: false, stateDir: os.tmpdir(), webPort: 1 };
+		const listener = createApi({
+			config,
+			netgate: createNetgate({ killFn: () => {} }),
+			getNetstate: async () => ({ transport: "wifi", metered: false, iface: "wlan0", source: "tier0", at: Date.now() }),
+			getMeta: () => ({ uptimeMs: 1, pid: process.pid }),
+			harness
+		});
+		const server = await startApi(config, listener);
+		t.after(() => new Promise((r) => server.close(r)));
+		return `http://127.0.0.1:${server.address().port}`;
+	};
+
+	const called = [];
+	const base = await mk({ restart: async () => ({ ok: true, killed: [9], pid: 10 }) });
+	const res = await fetch(`${base}/api/dsh/restart`, { method: "POST" });
+	assert.equal(res.status, 200);
+	const body = await res.json();
+	assert.equal(body.ok, true);
+	assert.equal(body.pid, 10);
+	called.push(1);
+	assert.equal(called.length, 1);
+
+	const base2 = await mk(undefined);
+	const res2 = await fetch(`${base2}/api/dsh/restart`, { method: "POST" });
+	assert.equal(res2.status, 501);
+	assert.match((await res2.json()).error, /unavailable/);
+});
+
+test("dshUrl.verify: real exchange probe → accepted vs rejected", async (t) => {
+	const http = await import("node:http");
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sylvia-dshurl-"));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+	// Fake harness: 303 for the good token, 401 otherwise (the real DSH shape).
+	const srv = http.createServer((req, res) => {
+		const u = new URL(req.url, "http://x");
+		if (u.searchParams.get("token") === "GOOD") {
+			res.writeHead(303, { location: "./", "set-cookie": "dsh-auth-x=v1; Path=/" });
+			res.end();
+		} else {
+			res.writeHead(401, { "content-type": "text/plain" });
+			res.end("authentication required");
+		}
+	});
+	await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+	t.after(() => new Promise((r) => srv.close(r)));
+	const port = srv.address().port;
+
+	const log = path.join(dir, "dsh-web.log");
+	fs.writeFileSync(log, "dsh web: http://127.0.0.1:3080/?token=GOOD\n");
+	const good = await dshUrl({ stateDir: dir, webPort: port });
+	assert.equal(good.harness, "up");
+	assert.equal(good.verify, "accepted");
+
+	fs.writeFileSync(log, "dsh web: http://127.0.0.1:3080/?token=STALE\n"); // new mtime
+	const bad = await dshUrl({ stateDir: dir, webPort: port });
+	assert.equal(bad.verify, "rejected", "a stale token must be reported, not assumed current");
 });

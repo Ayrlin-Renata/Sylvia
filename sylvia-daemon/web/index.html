@@ -22,11 +22,12 @@
 			<dl class="kv" id="dsh-kv"><dd class="muted">loading…</dd></dl>
 			<div class="toolbar" style="margin:14px 0 0">
 				<a id="btn-dsh" class="btn" href="http://127.0.0.1:3080" target="_blank" rel="noopener"
-				   title="Open the DSH harness web UI with the current token from its startup log (re-read every refresh)">Open DSH ↗</a>
+				   title="Open the DSH harness web UI with the current token (acceptance live-verified every refresh)">Open DSH ↗</a>
+				<button id="btn-restart" title="Restart the harness web server and mint a fresh token">Restart harness</button>
 			</div>
-			<div class="note">The button carries the harness' current one-time token (from
-			<code>~/.sylvia/*.log</code>, re-read every refresh), so it opens straight in even
-			after clearing browser data — no need to copy token URLs by hand.</div>
+			<div class="note">Open DSH always carries the harness' current token. After a
+			restart it turns <strong>red</strong> — still clickable — until the NEW token is
+			confirmed accepted by a real exchange, then flips back to normal.</div>
 		</div>
 		<div class="card">
 			<h2>Network</h2>
@@ -158,23 +159,58 @@ $("#btn-resume").onclick = async () => {
 	catch (e) { toast(e.message, true); }
 };
 
+// ---- harness card: state kept minimal (State only) --------------------------
+let restartWatch = null;   // fast poll while a restart is in flight
+let preRestartToken = null; // token before restart — "new" means changed
+
 async function refreshDsh() {
 	try {
 		const d = await jget("/api/dsh-url");
-		const age = d.tokenAgeMs == null ? null : Math.max(0, Math.round(d.tokenAgeMs / 1000));
 		$("#dsh-kv").innerHTML = kv([
-			["State", d.harness === "up" ? badge("ok", "up") : badge("bad", "down")],
-			["Token", d.token ? badge("ok", "current") : badge("warn", "not in log yet")],
-			["Source", d.token ? `${esc(d.source)} · ${age}s ago` : null],
-			["Port", String(d.port)]
+			["State", d.harness === "up" ? badge("ok", "up") : badge("bad", "down")]
 		]);
 		// Keep the href current so the click itself (a normal user gesture)
 		// opens a fresh tokened URL — no popup-blocked async navigation.
 		$("#btn-dsh").href = d.url;
+		// Restart confirmation: NEW token + server up + a real exchange says
+		// the server accepts it. Only then does the red state clear.
+		if (restartWatch !== null && d.token && d.token !== preRestartToken &&
+			d.harness === "up" && d.verify === "accepted") {
+			clearInterval(restartWatch);
+			restartWatch = null;
+			$("#btn-dsh").classList.remove("restarting");
+			toast("Harness restarted — new token verified live.");
+		}
 	} catch (e) {
 		$("#dsh-kv").innerHTML = kv([["Error", esc(e.message)]]);
 	}
 }
+
+$("#btn-restart").onclick = async () => {
+	try {
+		const cur = await jget("/api/dsh-url").catch(() => ({}));
+		preRestartToken = cur.token ?? null;
+		$("#btn-dsh").classList.add("restarting"); // red, but NEVER disabled
+		toast("Restarting harness — Open DSH stays red until the new token verifies…");
+		const r = await jpost("/api/dsh/restart");
+		if (r.ok === false) throw new Error(r.error || "restart refused");
+		refreshDsh();
+		if (restartWatch !== null) clearInterval(restartWatch);
+		// Fast confirmation poll while booting (the normal 5s refresh keeps
+		// running alongside; either may land the confirmation).
+		restartWatch = setInterval(() => refreshDsh().catch(() => {}), 1500);
+		setTimeout(() => {
+			if (restartWatch === null) return;
+			clearInterval(restartWatch);
+			restartWatch = null;
+			toast("No verified token 5 minutes after restart — check ~/.sylvia/dsh-web.log", true);
+		}, 300000);
+	} catch (e) {
+		if (restartWatch !== null) { clearInterval(restartWatch); restartWatch = null; }
+		$("#btn-dsh").classList.remove("restarting");
+		toast(e.message, true);
+	}
+};
 
 async function refreshAll() {
 	await Promise.all([refreshNetwork(), refreshGate(), refreshHealth(), refreshDsh()]);

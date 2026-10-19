@@ -67,6 +67,28 @@ function probePort(host, port, timeoutMs = 400) {
 }
 
 /**
+ * Does the harness actually ACCEPT this token right now? A real exchange
+ * against the live server:303 (+Set-Cookie) = accepted, 401 = rejected.
+ * Cheap (loopback) and re-probed per panel poll, so "token: current" is a
+ * proven fact, not a log-age guess — this is what gates the restart button's
+ * red state.
+ * @returns {Promise<"accepted"|"rejected"|"unexpected"|"unreachable"|null>}
+ */
+async function verifyToken(base, token, timeoutMs = 3000) {
+	try {
+		const r = await fetch(`${base}/?token=${token}`, {
+			redirect: "manual",
+			signal: AbortSignal.timeout(timeoutMs)
+		});
+		if (r.status === 303) return "accepted";
+		if (r.status === 401) return "rejected";
+		return "unexpected";
+	} catch {
+		return "unreachable";
+	}
+}
+
+/**
  * Build the deep link + panel metadata.
  * @param {object} opts
  * @param {string} opts.stateDir       ~/.sylvia (log candidates live here)
@@ -79,12 +101,14 @@ export async function dshUrl({ stateDir, webPort, logs, now = Date.now }) {
 	const hit = currentToken(files);
 	const up = await probePort("127.0.0.1", webPort);
 	const base = `http://127.0.0.1:${webPort}`;
+	const verify = hit === null || !up ? null : await verifyToken(base, hit.token);
 	return {
 		url: hit === null ? base : `${base}/?token=${hit.token}`,
 		token: hit === null ? null : hit.token,
 		source: hit === null ? null : path.basename(hit.file),
 		tokenAgeMs: hit === null ? null : Math.max(0, now() - hit.mtimeMs),
 		harness: up ? "up" : "down",
+		verify,
 		port: webPort
 	};
 }

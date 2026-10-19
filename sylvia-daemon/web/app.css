@@ -95,6 +95,14 @@ a.btn {
 	text-decoration: none;
 }
 a.btn:hover { border-color: var(--accent); }
+/* Restart in flight: red but still clickable (deliberately not disabled). */
+a.btn.restarting {
+	border-color: var(--bad);
+	color: var(--bad);
+	background: rgba(217, 95, 95, 0.12);
+	animation: dsh-pulse 1.2s ease-in-out infinite;
+}
+@keyframes dsh-pulse { 50% { opacity: 0.6; } }
 input, select {
 	background: var(--bg);
 	color: var(--fg);
