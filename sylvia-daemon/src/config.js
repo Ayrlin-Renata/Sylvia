@@ -24,6 +24,11 @@ export function loadConfig(env = process.env) {
 		host: "127.0.0.1",
 		port: int(env.SYLVIA_DAEMON_PORT, 3090),
 
+		// --- harness deep link --------------------------------------------
+		// DSH web port — matches the launcher's SYLVIA_WEB_PORT so the
+		// control panel's "Open DSH" button targets the same origin.
+		webPort: int(env.SYLVIA_WEB_PORT, 3080),
+
 		// --- state ---------------------------------------------------------
 		// ~/.sylvia — JSON only, human-inspectable, daemon is the single writer.
 		stateDir: env.SYLVIA_STATE_DIR || path.join(os.homedir(), ".sylvia"),

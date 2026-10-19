@@ -1,5 +1,6 @@
 import http from "node:http";
 import { makeStaticHandler } from "./web.js";
+import { dshUrl } from "./dshurl.js";
 
 // ---------------------------------------------------------------------------
 // Control API — loopback-only JSON over node:http (zero deps). Trust posture:
@@ -67,6 +68,17 @@ export function createApi({ config, netgate, getNetstate, getMeta, registry, mod
 			// ---- health ------------------------------------------------------
 			if (req.method === "GET" && p === "/api/health") {
 				return send(res, 200, { ok: true, ...getMeta() });
+			}
+
+			// ---- harness deep link (control panel "Open DSH") ---------------
+			// Re-reads the harness startup log per request so the link always
+			// carries the CURRENT one-time token (a restart mints a new one,
+			// and a cleared browser session can't fall back to a cookie).
+			if (req.method === "GET" && p === "/api/dsh-url") {
+				return send(res, 200, await dshUrl({
+					stateDir: config.stateDir,
+					webPort: config.webPort ?? 3080
+				}));
 			}
 
 			// ---- network -----------------------------------------------------

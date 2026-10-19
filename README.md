@@ -371,9 +371,14 @@ hardware. The installer is device-agnostic, so no emulator-specific branch is ne
 
 Open **`http://127.0.0.1:3090`** in the phone browser for the Sylvia control panel.
 
-- **Status** — network state (wifi/cellular/none, metered, SSID, WAN IP), netgate status
-  (harness held? managed traffic held?), paused-work count, module status summary, daemon
-  health, manual pause/resume.
+- **Status** — the **Harness card** first (harness up/down, current-token state with
+  source + age, and the **Open DSH ↗** button), then network state (wifi/cellular/none,
+  metered, SSID, WAN IP), netgate status (harness held? managed traffic held?),
+  paused-work count, module status summary, daemon health, manual pause/resume. The
+  Open DSH button is powered by `GET /api/dsh-url`, which re-reads the harness startup
+  log every refresh and hands over the **current** one-time token — so it opens the UI
+  straight through even after clearing browser data, with no hand-copied token URLs
+  (and no stale token after a harness restart).
 - **Resources** — all ownership/permission configuration: searchable networks/hosts/
   resources table, inline edit owner + gate, "label as mine / as \<person\>", per-type
   rules, prune-now + prune settings.

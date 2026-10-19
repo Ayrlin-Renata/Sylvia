@@ -13,12 +13,21 @@
 		<a href="/" class="active">Status</a>
 		<a href="/resources.html">Resources</a>
 		<a href="/modules.html">Modules</a>
-		<a href="http://127.0.0.1:3080" target="_blank" rel="noopener"
-		   title="Open the DSH harness web UI (same device, token-authed — opens straight through if this browser already has the session cookie)">Open DSH ↗</a>
 	</nav>
 </header>
 <main>
 	<div class="grid">
+		<div class="card">
+			<h2>Harness</h2>
+			<dl class="kv" id="dsh-kv"><dd class="muted">loading…</dd></dl>
+			<div class="toolbar" style="margin:14px 0 0">
+				<a id="btn-dsh" class="btn" href="http://127.0.0.1:3080" target="_blank" rel="noopener"
+				   title="Open the DSH harness web UI with the current token from its startup log (re-read every refresh)">Open DSH ↗</a>
+			</div>
+			<div class="note">The button carries the harness' current one-time token (from
+			<code>~/.sylvia/*.log</code>, re-read every refresh), so it opens straight in even
+			after clearing browser data — no need to copy token URLs by hand.</div>
+		</div>
 		<div class="card">
 			<h2>Network</h2>
 			<dl class="kv" id="net-kv"><dd class="muted">loading…</dd></dl>
@@ -149,8 +158,26 @@ $("#btn-resume").onclick = async () => {
 	catch (e) { toast(e.message, true); }
 };
 
+async function refreshDsh() {
+	try {
+		const d = await jget("/api/dsh-url");
+		const age = d.tokenAgeMs == null ? null : Math.max(0, Math.round(d.tokenAgeMs / 1000));
+		$("#dsh-kv").innerHTML = kv([
+			["State", d.harness === "up" ? badge("ok", "up") : badge("bad", "down")],
+			["Token", d.token ? badge("ok", "current") : badge("warn", "not in log yet")],
+			["Source", d.token ? `${esc(d.source)} · ${age}s ago` : null],
+			["Port", String(d.port)]
+		]);
+		// Keep the href current so the click itself (a normal user gesture)
+		// opens a fresh tokened URL — no popup-blocked async navigation.
+		$("#btn-dsh").href = d.url;
+	} catch (e) {
+		$("#dsh-kv").innerHTML = kv([["Error", esc(e.message)]]);
+	}
+}
+
 async function refreshAll() {
-	await Promise.all([refreshNetwork(), refreshGate(), refreshHealth()]);
+	await Promise.all([refreshNetwork(), refreshGate(), refreshHealth(), refreshDsh()]);
 }
 refreshAll();
 setInterval(refreshAll, 5000);
