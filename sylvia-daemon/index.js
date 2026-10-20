@@ -16,6 +16,7 @@ import { ModuleManager } from "./src/modules.js";
 import { createDiscoverer } from "./src/discover.js";
 import { createHarnessControl } from "./src/harness.js";
 import { createTransport } from "./src/transport.js";
+import { createA2AProxy } from "./src/a2aproxy.js";
 import path from "node:path";
 
 const log = makeLog();
@@ -77,6 +78,11 @@ export async function main(env = process.env) {
 	// Shizuku transport ladder (§19) — probe/kickstart/fallback/teardown.
 	const transport = createTransport(config);
 
+	// A2A proxy (§20.12 P3.2) — the panel's route to the nuncia plugin's
+	// admin surface. The daemon is a loopback client, so the plugin's own
+	// loopback-only guard stays exactly as it is.
+	const a2a = createA2AProxy({ config });
+
 	const api = createApi({
 		config,
 		netgate,
@@ -85,6 +91,7 @@ export async function main(env = process.env) {
 		discover: createDiscoverer(config, registry, async () => watcher.getLastState() ?? (await watcher.tick(), watcher.getLastState())),
 		harness: createHarnessControl({ config }),
 		transport,
+		a2a,
 		getNetstate: async () => watcher.getLastState() ?? (await watcher.tick(), watcher.getLastState()),
 		getMeta: () => ({
 			uptimeMs: Date.now() - startedAt,

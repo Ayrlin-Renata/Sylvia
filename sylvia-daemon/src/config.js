@@ -129,6 +129,16 @@ export function loadConfig(env = process.env) {
 		discoverEnabled: bool(env.SYLVIA_DISCOVER_ENABLED, true),
 		// CIDR to scan when no target given; empty = derive from local addrs.
 		scanCidr: env.SYLVIA_SCAN_CIDR || "",
-		scanTimeoutMs: int(env.SYLVIA_SCAN_TIMEOUT_MS, 60 * 1000)
+		scanTimeoutMs: int(env.SYLVIA_SCAN_TIMEOUT_MS, 60 * 1000),
+
+		// --- A2A proxy (§20.12 P3.2) ---------------------------------------
+		// Where the nuncia plugin's admin surface lives on this node. The
+		// daemon is a LOOPBACK client, so the plugin's own loopback-only guard
+		// stays intact while the phone's browser uses the daemon's API.
+		a2aAdminUrl: env.SYLVIA_A2A_ADMIN_URL || "http://127.0.0.1:4123/a2a/admin",
+		// The plugin's ADDITIONAL admin bearer (auth.adminToken). Separate from
+		// the peers' derived token on purpose: the panel path is explicitly
+		// keyed, and nothing token-shaped is discoverable.
+		a2aAdminToken: env.NUNCIA_ADMIN_TOKEN || ""
 	};
 }

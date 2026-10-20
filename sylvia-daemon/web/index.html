@@ -48,6 +48,29 @@
 			<dl class="kv" id="health-kv"><dd class="muted">loading…</dd></dl>
 		</div>
 		<div class="card">
+			<h2>A2A</h2>
+			<dl class="kv" id="a2a-kv"><dd class="muted">loading…</dd></dl>
+			<div id="a2a-grants" style="margin:12px 0 0"><div class="empty">loading…</div></div>
+			<div class="toolbar" style="margin:14px 0 0">
+				<input id="a2a-target" placeholder="peer" autocomplete="off" style="max-width:120px">
+				<select id="a2a-level">
+					<option value="intent">intent</option>
+					<option value="override">override</option>
+				</select>
+				<button id="btn-mint" title="Mint a signed authority window for a paired peer">Mint grant</button>
+			</div>
+			<div id="a2a-requests" style="margin:12px 0 0"><div class="empty">loading…</div></div>
+			<div id="a2a-operators" style="margin:12px 0 0"><div class="empty">loading…</div></div>
+			<div id="a2a-events" style="margin:12px 0 0"><div class="empty">loading…</div></div>
+			<div class="toolbar" style="margin:12px 0 0">
+				<input id="a2a-announce" placeholder="announcement (public signboard)" autocomplete="off" style="flex:1">
+				<button id="btn-announce" title="Publish this node's announcement">Set</button>
+			</div>
+			<div class="note">The panel reaches the nuncia plugin through the daemon's
+			loopback proxy. Minting is the human's act: a grant lets a peer act with
+			your intent for a bounded window.</div>
+		</div>
+		<div class="card">
 			<h2>Managed services</h2>
 			<div id="services"><div class="empty">loading…</div></div>
 		</div>
@@ -73,6 +96,16 @@ async function jget(path) {
 async function jpost(path, body) {
 	const r = await fetch(path, {
 		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body ?? {})
+	});
+	const j = await r.json().catch(() => ({}));
+	if (!r.ok) throw new Error(j.error || `${path}: ${r.status}`);
+	return j;
+}
+async function jput(path, body) {
+	const r = await fetch(path, {
+		method: "PUT",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(body ?? {})
 	});
@@ -150,6 +183,118 @@ async function refreshHealth() {
 	}
 }
 
+// ---- A2A card (DESIGN §20.12 P3.2) ------------------------------------------
+// Everything here comes through the daemon's loopback proxy; the plugin's own
+// bearer and loopback guards are never bypassed.
+
+async function refreshA2A() {
+	let s;
+	try {
+		s = await jget("/api/a2a/status");
+	} catch (e) {
+		$("#a2a-kv").innerHTML = kv([["Status", badge("bad", "unavailable")], ["Error", esc(e.message)]]);
+		$("#a2a-grants").innerHTML = `<div class="empty">no A2A plugin reachable</div>`;
+		return;
+	}
+	const id = s.identity ?? {};
+	// The plugin returns {origin, grants:[...]} — not a bare array.
+	const grantList = Array.isArray(s.authority?.grants) ? s.authority.grants : (s.authority?.grants?.grants ?? []);
+	const active = grantList.filter((g) => g && (g.expiresAt ?? 0) > Date.now());
+	const rejected = s.authorityRejected ?? 0;
+	$("#a2a-kv").innerHTML = kv([
+		["Node", esc(id.name ?? "—") + (id.kid ? ` <span class="muted mono">${esc(id.kid)}</span>` : "")],
+		["Authority", s.authority?.enabled ? badge("ok", "on") : badge("neutral", "off")],
+		["Active grants", String(active.length)],
+		["Rejected claims", String(rejected)],
+		["Operators", String((s.operators ?? []).length)],
+		["Chatelaine", s.chatelaine ? badge("ok", "adopted") : badge("neutral", "not yet")],
+		["Announcement", esc(id.announcement || "—")]
+	]);
+	$("#a2a-grants").innerHTML = active.length === 0
+		? `<div class="empty">no live grants</div>`
+		: `<table><tr><th>Peer</th><th>Level</th><th>Scope</th><th>Expires</th><th></th></tr>` +
+			active.map((g) => `<tr><td>${esc(g.target ?? "?")}</td><td>${esc(g.level ?? "?")}</td>` +
+				`<td>${esc(g.scope ?? "—")}</td><td>${when(g.expiresAt)}</td>` +
+				`<td><button data-revoke="${esc(g.id)}" class="danger">Revoke</button></td></tr>`).join("") +
+			`</table>`;
+	// Operator roster: who is working, at what level, until when.
+	const ops = s.operators ?? [];
+	$("#a2a-operators").innerHTML = ops.length === 0
+		? `<div class="empty">no operators</div>`
+		: `<table><tr><th>Handle</th><th>Level</th><th>Scope</th><th>State</th><th>Expires</th></tr>` +
+			ops.map((o) => `<tr><td class="mono">${esc(o.handle ?? "?")}</td><td>${esc(o.level ?? "?")}</td>` +
+				`<td>${esc(o.scope ?? "—")}</td><td>${esc(o.state ?? "?")}</td><td>${when(o.expiresAt)}</td></tr>`).join("") +
+			`</table>`;
+	// Security events: what the authority layer refused, newest first.
+	const events = (s.authority?.securityEvents ?? []).slice().reverse().slice(0, 8);
+	$("#a2a-events").innerHTML = events.length === 0
+		? `<div class="empty">no security events</div>`
+		: events.map((e) => `<div class="empty">${esc(e.kind ?? "event")}${e.reason === undefined ? "" : ` — ${esc(e.reason)}`}</div>`).join("");
+	const ann = $("#a2a-announce");
+	if (document.activeElement !== ann) ann.value = id.announcement ?? "";
+	await refreshA2ARequests();
+}
+
+async function refreshA2ARequests() {
+	try {
+		const r = await jget("/api/a2a/requests");
+		const pending = r.pending ?? [];
+		$("#a2a-requests").innerHTML = pending.length === 0
+			? `<div class="empty">no pending approvals</div>`
+			: pending.map((p) =>
+				`<div class="empty">${esc(p.reason ?? "approval requested")}` +
+				`<div class="toolbar"><button data-allow="${esc(p.id)}">Allow once</button>` +
+				`<button data-deny="${esc(p.id)}" class="danger">Deny</button></div></div>`).join("");
+		for (const b of document.querySelectorAll("[data-allow]")) {
+			b.onclick = async () => {
+				try {
+					await jpost("/api/a2a/requests/decide", { id: b.dataset.allow, decision: "allowed-once" });
+					toast("Approved — the grant is minted.");
+					refreshA2A();
+				} catch (e) { toast(e.message, true); }
+			};
+		}
+		for (const b of document.querySelectorAll("[data-revoke]")) {
+			b.onclick = async () => {
+				try {
+					await jpost("/api/a2a/revoke", { id: b.dataset.revoke });
+					toast("Revoked.");
+					refreshA2A();
+				} catch (e) { toast(e.message, true); }
+			};
+		}
+		for (const b of document.querySelectorAll("[data-deny]")) {
+			b.onclick = async () => {
+				try {
+					await jpost("/api/a2a/requests/decide", { id: b.dataset.deny, decision: "rejected" });
+					toast("Denied.");
+					refreshA2A();
+				} catch (e) { toast(e.message, true); }
+			};
+		}
+	} catch (e) {
+		$("#a2a-requests").innerHTML = `<div class="empty">approvals unavailable</div>`;
+	}
+}
+
+$("#btn-mint").onclick = async () => {
+	const target = $("#a2a-target").value.trim();
+	if (!target) { toast("which peer?", true); return; }
+	try {
+		const r = await jpost("/api/a2a/mint", { target, level: $("#a2a-level").value });
+		toast(r.ok === false ? (r.error ?? "mint refused") : `minted ${r.level ?? "intent"} for ${target}`);
+		refreshA2A();
+	} catch (e) { toast(e.message, true); }
+};
+
+$("#btn-announce").onclick = async () => {
+	try {
+		const r = await jput("/api/a2a/announcement", { announcement: $("#a2a-announce").value });
+		toast(r.ok === false ? (r.error ?? "refused") : "announcement published.");
+		refreshA2A();
+	} catch (e) { toast(e.message, true); }
+};
+
 $("#btn-hold").onclick = async () => {
 	try { await jpost("/api/netgate/hold", { reason: "manual (control panel)" }); toast("Managed traffic paused."); refreshGate(); }
 	catch (e) { toast(e.message, true); }
@@ -213,7 +358,7 @@ $("#btn-restart").onclick = async () => {
 };
 
 async function refreshAll() {
-	await Promise.all([refreshNetwork(), refreshGate(), refreshHealth(), refreshDsh()]);
+	await Promise.all([refreshNetwork(), refreshGate(), refreshHealth(), refreshDsh(), refreshA2A()]);
 }
 refreshAll();
 setInterval(refreshAll, 5000);

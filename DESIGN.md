@@ -1849,3 +1849,55 @@ card, announcement, admin token, name pool); P3.1 done (tag + metered
 exemption, unit + live); P3.2 in progress (daemon proxy + dashboard card —
 the proxy and the first card exist, the revoke/roster/events/badge work and
 the live daemon→nuncia→dashboard acceptance do not).
+
+### 20.12.2 P3.2 executed — the daemon proxy and the panel's A2A card
+
+The panel reaches nuncia through the **daemon**, not directly: the plugin's
+mint/revoke are loopback-only (a bearer alone must never let a paired peer
+grant itself intent), and the daemon *is* the loopback client. The proxy
+speaks to the plugin with the additional `auth.adminToken` (a second accepted
+bearer, never the primary peer token).
+
+**The proxy** (`sylvia-daemon/src/a2aproxy.js`) allows a fixed route set
+(`status`, `mint`, `revoke`, `requests`, `requests/decide`, `announcement`,
+`rules`, `operators`, `operators/prune`), blocks unknown routes, wrong
+methods and path traversal, and never makes an unauthenticated plugin call.
+Its failures are explicit: `503` when no admin URL or token is configured,
+`502` when the plugin is unreachable, and a non-JSON body is reported rather
+than swallowed.
+
+**The card** reads one payload (`/api/a2a/status`) and renders: node name +
+kid, authority badge, live grants, rejected-claim count, operator roster,
+chatelaine state, the announcement editor, pending approvals with
+Allow-once/Deny, recent security events, and mint/revoke controls.
+
+**A contract bug the live run caught.** The card had been written against an
+*imagined* status shape: it read `authority.grants` as an array (the plugin
+returns `{origin, grants:[…]}`) and read `grant.exp` (the plugin sends
+`expiresAt`). Both would have rendered an empty grant table forever. Fixed
+after diffing the card's reads against the plugin's actual payload — the
+lesson is the same one from the P1 work: a client written from a shape
+*believed* to be right is worth nothing until it runs against the real one.
+
+**Live acceptance (2026-10-20), both nodes:**
+
+| step | desk | AVD |
+|---|---|---|
+| `/api/a2a/status` through the proxy | ✅ | ✅ |
+| mint (intent, scope, ttl) | ✅ `mF3IdWCH…` → avd | ✅ `KzIAaJlK…` → desk |
+| grant visible in `/status` | ✅ | ✅ |
+| revoke | ✅ `revoked: true` → list empty | ✅ `revoked: true` → list empty |
+| operators roster | ✅ | ✅ (2 operators, ages, expiries) |
+| announcement set/read | ✅ | ✅ `P3.2 acceptance: panel proxy live` |
+| approval queue | ✅ (`{ok, approvalMode, pending:[]}`) | ✅ |
+| dashboard serves the card | ✅ | ✅ (`a2a-kv`, `a2a-operators`, `g.expiresAt` present) |
+
+The PC daemon needed an `auth.adminToken` in the profile to match the
+daemon's `NUNCIA_ADMIN_TOKEN`; without it the proxy answers 401 — a clear,
+correct failure (the two sides must agree on the admin key).
+
+**State now:** P3.0 done, P3.1 done, P3.2 done (proxy + card, contract
+verified live on both nodes). Next: **P3.3** — the push path (approvals via
+`approveCommand`, security events via a root-context bridge subscription) and
+**P3.4** (the installer's name-pool seeding is in; the registry last-seen join
+and the README A2A section remain).

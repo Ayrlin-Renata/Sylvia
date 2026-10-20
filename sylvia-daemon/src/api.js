@@ -59,8 +59,12 @@ async function readJsonBody(req, limitBytes = 64 * 1024) {
  * @param {ReturnType<import("./transport.js").createTransport>} [deps.transport]  Shizuku transport ladder (§19)
  * @returns {http.RequestListener}
  */
-export function createApi({ config, netgate, getNetstate, getMeta, registry, modules, discover, harness, transport }) {
+export function createApi({ config, netgate, getNetstate, getMeta, registry, modules, discover, harness, transport, a2a }) {
 	const serveStatic = makeStaticHandler();
+	// A node without the A2A plugin (or without an admin token) still serves
+	// the panel: the A2A card then says "not configured" instead of the whole
+	// panel erroring.
+	const a2aProxy = a2a ?? { handle: async () => ({ code: 503, body: { error: "A2A proxy unavailable in this build" } }) };
 	return async (req, res) => {
 		const url = new URL(req.url, "http://127.0.0.1");
 		const p = url.pathname;
@@ -236,6 +240,20 @@ export function createApi({ config, netgate, getNetstate, getMeta, registry, mod
 				const body = await readJsonBody(req);
 				const report = await discover.scan({ target: body.target });
 				return send(res, report.ok ? 200 : 409, report);
+			}
+
+			// ---- A2A proxy (§20.12 P3.2) --------------------------------------
+			// The panel's route to the nuncia plugin's admin surface. The
+			// daemon proxies with the admin token; the plugin's loopback-only
+			// guard is never loosened (the daemon IS a loopback client).
+			if (p.startsWith("/api/a2a/")) {
+				const route = p.slice("/api/a2a/".length);
+				let body;
+				if (req.method === "POST" || req.method === "PUT") {
+					body = await readJsonBody(req);
+				}
+				const result = await a2aProxy.handle(req.method, route, body);
+				return send(res, result.code, result.body);
 			}
 
 			return send(res, 404, { error: "not found" });
