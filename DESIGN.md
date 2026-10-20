@@ -1264,3 +1264,26 @@ a subagent cannot mint authority for itself. Notices ride `agent.inject`, which
 is model-visible but cannot wake the driver (that is the point: an idle chatelaine
 learns on its next turn), with a sweep timer so lapse is announced even when
 nothing else happens.
+
+**Live finding — the v4 session format retired `source.kind: 'plugin'`.** The
+first A2A probe after enabling authority failed with
+`format v4 message requires a producer-owned source kind`: the rejection notice
+was injected with the old `{kind:'plugin', plugin:'dsh-nuncia'}` wrapper, and
+`dsh-session-format-v3-to-v4` refuses that kind when a native v4 event is
+adopted — the rejected write fails the *whole turn*, not just the notice. The
+canonical replacement is the format's own `producerKind()` fallback,
+`plugin:<package>` (a v3 `plugin` source rewrites to exactly that). Both
+`dsh-nuncia` and `sylvia-bridge` were patched; sylvia-bridge had the same latent
+bug and can also `followup`, so it could have failed turns that queued a notice.
+A test now asserts the producer-owned kind so the wrapper cannot come back.
+
+Verified live on the AVD after the fix (single node, `emulator-5554`): `/status`
+reports `authority{enabled, nodeName:'avd'}`; loopback `POST /mint` → 201 with a
+signed envelope and the grant listed; `POST /requests/decide` with an unknown id
+→ `{ok:true, decided:false}` (fail-closed); a forged envelope → the task still
+**completes** as `peer`, one `authority-rejected:signature` event, and the notice
+lands in the session store as
+`{"kind":"plugin:dsh-nuncia","form":"notice",…}` beside native `runtime-context`
+and `time-context` sources. The same session's request header shows `a2a_send`
+registered — the injected `tools` fiber works in the real harness, not only in
+the fake-ctx tests.

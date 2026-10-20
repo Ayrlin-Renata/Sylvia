@@ -56,8 +56,12 @@ export function apply(ctx, config) {
         const message = createUserMessage({
           content: [{ type: 'text', text }],
           source: {
-            kind: 'plugin',
-            plugin: 'sylvia-bridge',
+            // NOT the retired `kind: 'plugin'` wrapper: the v4 session format
+            // refuses it ("format v4 message requires a producer-owned source
+            // kind") and the rejected write fails the whole turn. The canonical
+            // producer kind for a third-party plugin is `plugin:<package>` —
+            // what the format's own producerKind() fallback produces.
+            kind: 'plugin:sylvia-bridge',
             form: 'notice',
             summary: boundContextSummary(text.split('\n')[0]),
           },
