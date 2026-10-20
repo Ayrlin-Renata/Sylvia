@@ -976,14 +976,30 @@ Normative rules:
    `peer` AND raise a security event (toast / OS dialog / panel badge) —
    never silently.
 
-Envelope: `metadata.authority = { v:1, level:"intent"|"override", scope?, origin, target, iat, exp, jti, sig }`
-- `sig` = HMAC-SHA256 over canonical fields with key material **derived
-  from the pairing secret** (one pairing ceremony also derives the bearer
-  token — connection auth and authority share one root).
+Envelope (v2, current): `metadata.authority = { v:2, level:"intent"|"override",
+scope?, origin, target, kid, iat, exp, jti, sig }`
+- `sig` = **Ed25519 over the canonical fields, signed with the minting node's
+  private key**. A receiver looks the claimed `origin` up in its peer registry,
+  checks that `kid` (16 chars of SHA-256 over the public key) matches the key
+  configured for that origin, and verifies with the **public** key only.
 - Freshness: reject `iat > now + skew(60s)` or `now > exp` or
   `exp - iat > maxWindow`; `jti` recorded per link (reuse after delivery
   or across targets = event; same-link within-window replay = tolerated,
   same presence zone).
+- Binding: a node cannot speak for itself (`origin == us` ⇒ `origin-mismatch`),
+  an origin with no configured key is `unknown-origin` (never a fallback), and a
+  v2 envelope is refused by the legacy verifier and vice versa (`version`).
+
+**Correction (2026-10-20).** §20.1 originally specified a *shared* HMAC root
+derived from the pairing secret, with a note that "connection auth and authority
+share one root". Reviewing it against the intent — *authority must not be
+derivable from connectivity* — showed that design cannot express that property:
+HMAC has no verify-only mode, so every node able to **check** intent held the
+same key and could equally **mint** it, and since `origin` was only a signed
+string, under *any* node's name. Proven live before the fix: an envelope signed
+with the shared secret but claiming `origin:"ghost-node"` was accepted as
+`intent`. The v1 form (`v:1`, HMAC-SHA256) remains verifiable only through an
+explicit legacy key with `allowV1`, for the migration window.
 
 ### 20.2 Minting — how user intent enters the world
 
@@ -1010,13 +1026,17 @@ exists. No tool returns the pairing secret or a live grant.
   documented as the supported cross-network path). **Noise protocol** is
   the planned upgrade for transient P2P; the handshake abstraction is
   designed so Noise slots in without changing the authority model.
-- **Pairing ceremony** = the first-contact problem: one secret
-  (`NUNCIA_PAIRING_SECRET` — **env paste for v1, decided 2026-10-19**;
-  generated on either node) → derives bearer + HMAC root (+ future Noise
-  PSK). Peers are
-  addressed by *name*; the handshake authenticates regardless of IP, so
-  churn doesn't matter — Sylvia-integration remembers last-seen address
-  per name purely as a routing convenience.
+- **Pairing ceremony** = the first-contact problem, now a **public-key
+  exchange**: each node generates one Ed25519 key pair (`nodeKeyFile`, 0600, or
+  `nodeKey` inline for fixed-env hosts) and the other side pastes its **public**
+  key (with `kid` pinned) into `authority.peers`. Fingerprints are compared out
+  of band; the AgentCard is unauthenticated and is therefore not a trust anchor.
+  `NUNCIA_PAIRING_SECRET` survives as a *bearer-token* derivation only
+  (per node name: `hkdf(secret, "nuncia/bearer:<node>")`), plus the legacy v1
+  verification key during migration. A node with a key pair needs no shared
+  secret to verify intent. Peers are addressed by *name*; the handshake
+  authenticates regardless of IP, so churn doesn't matter — Sylvia-integration
+  remembers last-seen address per name purely as a routing convenience.
 - AgentCard gains an authority extension declaring the metadata key,
   supported levels, and `maxWindow`.
 
@@ -1070,10 +1090,14 @@ Housekeeping workspace.
 **Protects against**: cross-node confusion and intent feedback loops;
 stale / replayed / out-of-scope / laundered authority; response-side
 hallucinated intent; accidental agent use (approval-gated mint, no grant
-bytes in agent-visible paths); unauthorized connections (bearer).
+bytes in agent-visible paths); unauthorized connections (bearer); and — since
+v2 — **a paired peer minting authority it was not granted**, including under
+another node's name, because verification needs only public keys.
 **Does NOT protect against**: a local agent actively reading key material
 off disk (same uid — DSH runs `danger-full-access`, so local agents are
-*inside* the trust boundary by design); plaintext confidentiality on a
+*inside* the trust boundary by design; the node's private key is such material);
+a peer's grant being echoed by the receiver it was minted for (it `exp`ires, and
+revocation is local — see §20.5); plaintext confidentiality on a
 v1 LAN (use a tunnel or wait for Noise); physical access. These
 residuals are accepted consciously, not overlooked.
 
@@ -1086,12 +1110,17 @@ residuals are accepted consciously, not overlooked.
   log, admin mint/revoke/status, `request_user_intent` tool, inbound
   verify → fail-down + event, outbound auto-attach; LAN desktop↔AVD demo
   with real grants (L2 honored, expiry drifts to L1, responses carry
-  none).
+  none). **Done 2026-10-19.**
+- **P1.5 — per-node keys (done 2026-10-20, pulled forward from P4)**: Ed25519
+  identities, public-key pairing, v2 envelopes with `kid`, legacy v1 gated by
+  `allowV1`, `bin/nuncia-identity.js`. Pulled forward because P1's shared-HMAC
+  design could not distinguish verifying from minting (§20.1 correction).
 - **P2 — Chatelaine layer**: workspace + skill, operator handles, 7d TTL
   prune, security-event → notification path.
 - **P3 — inter-session spike + Sylvia glue**: `targetSession` decision,
   panel buttons, netgate exemption, toasts, remembered peers.
-- **P4 — hardening**: Noise/pairing UX, per-node keys, **new nuncia
+- **P4 — hardening**: Noise/pairing UX, key rotation + revocation story (rotate
+  a node key ⇒ peers re-pin; compromise ⇒ remove the `peers` entry), **new nuncia
   READMEs in EN + ZH acknowledging the original upstream** (same pattern
   as the mobile fork), plus the Sylvia-side README A2A section +
   troubleshooting rows; arm64 physical-device run.
@@ -1333,3 +1362,62 @@ standalone) ↔ `avd` (emulator 4123, reached from the PC through
 
 That is L2 honored, the drift rule observable on the wire, and revocation
 mid-conversation — with the peer never failing a turn over authority.
+
+### 20.10.2 P1.5 — per-node Ed25519 keys, live two-node acceptance (2026-10-20)
+
+**The review question, and what it exposed.** "Does this hold up to §20 — intent
+authority shouldn't be derivable from the bearer, since any client that can A2A
+has the bearer?" The bearer was *not* the leak: HKDF separated the two outputs.
+The leak was that **verification used the same key as signing**. HMAC cannot
+verify without the key, so every node that could honour `intent` could mint it,
+and `origin` was an unauthenticated claim inside the signed blob. Demonstrated
+live before the fix: an envelope signed with the shared secret, claiming
+`origin:"ghost-node"` (a node that does not exist), was accepted as `intent`
+(`TASK_STATE_COMPLETED`, `/status` recorded `{level:"intent",
+scope:"forged-origin"}`). The design's own §20.3 "…(+ future Noise PSK)" and P4
+"per-node keys" anticipated this; it was pulled forward (P1.5) instead of shipped
+as-is, because the property is the point of the layer.
+
+**Implementation** (`owned_forks/dsh-nuncia`, commits on `main`):
+
+| file | change |
+|---|---|
+| `lib/keys.js` | new — load/generate one Ed25519 key pair; `nodeKey` inline, `NUNCIA_NODE_KEY`, or `nodeKeyFile` (0600, atomic). An unparseable existing key file is **fatal and never overwritten** (replacing it would rotate identity behind every peer's pin) |
+| `lib/authority.js` | v2 canonical form + `createEnvelopeV2` / `verifyEnvelopeV2` (kid → signature → time → binding), `keyIdOf`/`fingerprintOf`/`parsePublicKey`/`exportPublicKey`, `createSigner`; legacy v1 kept behind the same module |
+| `lib/grants.js` | takes a signer, mints v2, re-verifies persisted grants against the node's own public key |
+| `lib/inbound.js` | peer **key registry**: claimed `origin` → configured public key → `kid` match → Ed25519 verify. No key ⇒ `unknown-origin` (no fallback); self-claim ⇒ `origin-mismatch`; `allowV1` + `legacyKey` gate v1 |
+| `lib/index.js` | config `nodeKey`/`nodeKeyFile`/peer objects/`allowV1`; `/status` exposes `identity{kid,fingerprint,publicKey,keySource}` and per-peer kids; card authority extension carries the node `kid` |
+| `bin/nuncia-identity.js` | new — prints kid/fingerprint/public key and a paste-ready `peers:` entry; `--check --kid` verifies a pin |
+| `bin/nuncia-token.js` | per-node derivation (`--node <name>`); prints the pre-v2 form when omitted |
+
+**Bug found only live:** the gate captured `now: now()` **once at construction**,
+so a long-running node rejected every grant minted more than the skew window
+after boot with `not-yet-valid` — the first A2A probe after deployment failed
+exactly this way while the unit tests (constant fake clock) passed. Fixed to
+evaluate timing per verification, with a regression test that advances the clock.
+
+**Acceptance — two nodes, real wire, 2026-10-20.** `desk` (PC, 4123) ↔ `avd`
+(emulator, 4123 via `adb forward tcp:14123`); keys generated on each node, only
+**public** keys exchanged, `nodeKeyFile` mode 0600, `allowV1: true`.
+
+| step | result |
+|---|---|
+| identities | `desk kid 7jsvWk5X142WqWk7`, `avd kid W0jttouSyxfHmnzx`, both `keySource:file`; `/status` shows the other peer with `canVerifyV2:true` |
+| `desk` mints `intent` for `avd`, envelope sent | `avd` records `{level:"intent", scope:"v2-kid", origin:"desk", kid:"7jsvWk5X142WqWk7"}` — the signer's key, not a claim |
+| `avd` mints `intent` for `desk` (reverse direction) | `desk` records `{level:"intent", origin:"avd"}`, `authorityRejected` 0 |
+| forged envelope: ghost key, `origin:"avd"`, avd's `kid` ⇒ sent to `desk` | task **completes as `peer`**, `authority: null`, `authorityRejected` +1, event `authority-rejected:signature` |
+| forged envelope: ghost key, `origin:"desk"`, desk's `kid` ⇒ sent to `avd` | same — completes as `peer`, event `signature` (the property, from both sides) |
+| legacy v1 envelope (shared secret) | honoured as `intent` while `allowV1` — migration window works |
+| expired window / `allowV1:false` | drifts to `peer` / `legacy-disabled` (unit + harness covered) |
+
+**Residual, stated plainly:** an agent running with `danger-full-access` can read
+the node's private key from disk — the §20.6 accepted residual. v2 fixes the
+*remote* threat it was asked to fix (a peer cannot mint, and cannot mint under
+another name); it cannot fix a compromised local agent, and does not claim to.
+Also unchanged: revocation is local to the minter — an already-issued envelope
+stays valid until `exp`, which is why windows are short.
+
+Note for the next session: model turns on the AVD hung during this acceptance
+(upstream free routes; `/v1/models` healthy, no turn error in the harness log), so
+evidence above is the authority decision recorded at request intake rather than a
+completed model reply. That is environmental, not an authority-layer finding.
