@@ -1610,3 +1610,189 @@ reason operators are sessions, not subagents), and the P3 glue (panel buttons,
 netgate exemption, toasts, remembered peers). The `targetSession` spike is
 effectively answered: chatelaine↔operator is cross-session reporting over
 `resume` + `inject`, no new primitive needed.
+
+
+### 20.12 P3 plan — Sylvia glue (2026-10-20, revised after discussion)
+
+P3 makes the authority layer *operable by a human on a phone*. Everything here
+is Sylvia-side convenience except P3.0, which is a plugin-surface lockdown the
+operator asked for; the plugin core stays independent of Sylvia (§20.5).
+
+**Discussion verdicts (2026-10-20), which shaped the plan:**
+1. The AgentCard is a *discovery* surface and must **not** be public: even
+   looking at a node's card is locked behind auth, and a raw nuncia install
+   must not be A2A-usable by "just anyone who has installed nuncia". Node
+   identity beyond the name comes from the `kid` (internal, collision-proof).
+2. Notifications use **push hooks**: approvals fire the existing
+   `approveCommand` hook at the daemon; security events are forwarded by the
+   bridge subscribing to the plugin's `nuncia/security-event` emission.
+3. The **agent card stays minimal** — name, platform, last downtime end, and a
+   chatelaine-managed public announcement. Peer address memory lives in
+   Sylvia's registry (the resource network), not in nuncia. Node names come
+   from a newline-delimited file picked at random on first boot (the human
+   supplies the file; a heavy generator does not ship with every install).
+
+**One structural fact shapes P3.1**: the A2A listener lives inside the harness
+process, and what can kill it on metered data is the *bridge's* in-process gate
+(turn cancellation), not the daemon netgate (which SIGSTOPs external services).
+So "exempt A2A" is gate-level exemption by session identity; the §20.5 netgate
+exempt-flag is only needed if someone later runs nulia standalone.
+
+#### P3.0 — plugin surface lockdown + minimal card (prerequisite, nulia)
+
+- **Card requires auth.** `GET {agentCardPath}` answers 401 without the bearer
+  by default; `agentCard.public: true` is the explicit escape hatch for nodes
+  that accept unauthenticated scanners. Paired peers already hold the derived
+  token, so the mesh is unaffected; only scanners lose.
+- **Minimal card**: `{name, platform, since, announcement, …}` plus the
+  existing authority extension (`kid`). `platform` derives from
+  `process.platform`-`process.arch` (overridable); `since` is the plugin's
+  boot time = "last downtime end".
+- **Announcement**: `GET|PUT {adminPath}/announcement` (loopback + bearer,
+  persisted in the state dir) and a `set_announcement` tool that only the
+  chatelaine session may call — it is the human's signboard, agent-managed.
+- **Name generation**: `nodeNameFile` (newline-delimited). When `nodeName` is
+  unset and the file exists, pick a random line on first boot and persist it
+  (state dir); fall back to the hostname when no file. Collisions are resolved
+  by `kid`, which is already carried in cards, envelopes and the pairing
+  `--check` flow.
+- **`auth.adminToken` / `auth.adminTokenEnv`**: an ADDITIONAL accepted bearer,
+  never the primary — peers keep using the derived token (pinned `auth.token`
+  semantics unchanged). This is what the Sylvia daemon proxies with, and it
+  makes the admin path explicit keying rather than derivation (discussion
+  point 1: nothing token-shaped is discoverable, only configured).
+
+#### P3.1 — A2A session tagging + metered exemption
+
+- nulia tags every session it creates: `meta.a2a = {role:'operator', handle,
+  level, taskId}` / `{role:'chatelaine'}` — rides the session header,
+  survives restarts.
+- sylvia-bridge gains `allowA2AOnMetered` (default **false**, fail-closed).
+  When the gate trips and the flag is on, `meta.a2a` sessions are exempt:
+  inbound tasks run, outbound `a2a_send` works, the chatelaine still sees
+  reports. When off, an A2A task cancelled by the gate surfaces honestly
+  (`TASK_STATE_FAILED`, `aborted: hook`, plus a chatelaine notice — P2's
+  triage).
+- Acceptance: AVD, wifi off → task fails with the gate reason (flag off), then
+  completes (flag on). Desk unchanged.
+
+#### P3.2 — daemon proxy + dashboard A2A card
+
+- Daemon `/api/a2a/*` proxies to nulia on 127.0.0.1:4123 using
+  `NUNCIA_ADMIN_TOKEN` from `sylvia.env` (the plugin's new admin-token slot).
+  The proxy is what makes loopback-only mint/revoke reachable from the phone
+  browser without weakening the guard: the *daemon* is the loopback client.
+- Routes: `GET /api/a2a/status` (identity, grants, roster, events),
+  `POST /api/a2a/mint|revoke`, `GET /api/a2a/requests` +
+  `POST /api/a2a/requests/decide`, `GET|PUT /api/a2a/announcement`.
+- Dashboard **A2A card** (the human's own panel, its own auth — not the agent
+  card): authority badge, grants with countdown, mint/revoke controls, operator
+  roster, approval queue with Allow/Deny, recent security events, the
+  announcement editor. Peers shown with the daemon registry's last-seen
+  annotation (P3.4 joins).
+
+#### P3.3 — push notifications (discussion point 2)
+
+- **Approvals**: the launcher seeds `approveCommand` to curl the daemon
+  (`NUNCIA_APPROVAL_ID`/`REASON` already ride the env) → instant notification
+  + panel queue entry. The broker queue stays the fallback surface.
+- **Security events**: nulia already emits `nuncia/security-event`; the bridge
+  subscribes **on the root context** (cordis emit bubbles child→root; a sibling
+  listener never sees it) and forwards to `POST /api/a2a/event` → log +
+  termux-notification when Termux:API is present (best-effort; the AVD has no
+  Termux:API app, so it degrades to log + panel) + panel list.
+- One test proves the root-level subscription receives the plugin's emission.
+
+#### P3.4 — peer memory join, names, docs, acceptance
+
+- The panel joins configured peers (from `/status`) with registry last-seen —
+  display only; nulia stays barebones (discussion point 3).
+- Sylvia ships `assets/node-names.txt` (human-supplied list), seeded to
+  `~/.sylvia/node-names.txt` on install, wired as `nodeNameFile` for fresh
+  nodes.
+- Docs: README A2A section (install → pair → panel), troubleshooting rows
+  (mint 401: admin token mismatch; card 401: expected — fetch with a bearer),
+  DESIGN §20.12.1 acceptance record.
+- Full acceptance on desk + AVD: card locked (401 unauth / 200 with bearer),
+  minimal fields present, name generated from the file on a fresh node, admin
+  token mint from the panel, approval Allow path, security-event notification,
+  metered exemption both ways.
+
+**Deferred (not assumed):** the `a2a_send` parity tool in sylvia-mcp — the
+canonical agent-facing tool lives in the plugin; an MCP copy only adds value
+for outside-harness callers (Tasker scenes). Marked optional until wanted.
+
+**Not in P3:** Noise, key rotation (P4), hard per-level caps (P2 leftover), any
+change to the authority semantics themselves.
+
+### 20.12.1 P3.0 executed — the auth posture and the minimal card (2026-10-20)
+
+The first half of P3 is implemented in `dsh-nuncia` and live on both nodes.
+The operator's rule drove the design: *the endpoint serves, but only to
+requests that carry a valid bearer; a client without one gets an invalid-auth
+notice and never reaches a session or an agent.*
+
+**What was wrong before.** A raw install — no `auth` block, no authority layer
+— resolved to **no token at all**, and every bearer check was conditional on
+a token existing (`if (authToken !== undefined && …)`). So the endpoint was
+open to anyone who could reach the port. That was the "anyone who has
+installed nuncia" gap.
+
+**The posture now.**
+- A node with no configured token **generates** one, persists it at
+  `<stateDir>/bearer.token` (0600, never overwritten — a silent rotation would
+  lock every peer out) and reports it once at boot. The endpoint is closed
+  from the first second without a config step.
+- The bearer is checked with a constant-time comparison, and two tokens may be
+  accepted: the primary (config → env → derived-from-pairing-secret →
+  generated) and an optional `auth.adminToken` / `auth.adminTokenEnv` — the
+  Sylvia daemon's proxy key, an *additional* bearer, never the primary.
+- A refused request gets `401 {"error":"unauthorized","detail":"a valid bearer
+  token is required"}` and touches nothing: the P3 test asserts **zero
+  sessions created** by a rejected request.
+
+**The card is now a private surface.** `agentCard.public` defaults to false:
+reading a node's card takes the same bearer as speaking to it
+(`agentCard.public: true` is the explicit opt-out for scanners). The card
+carries only what the operator asked for — **name, platform, last downtime end
+(`since`), and a chatelaine-managed announcement** — in a
+`capabilities.extensions` entry, because the SDK's `AgentCard.toJSON` drops
+unknown top-level fields and extensions are the protocol's own place for
+node-specific data. Peer address memory stays in Sylvia's registry; nuncia
+stays barebones.
+
+**Names.** `authority.nodeNameFile` (newline-delimited, `#` comments allowed):
+with no configured name, the first boot picks one at random and remembers it in
+`<stateDir>/identity.json`; with no file, the hostname. Precedence is
+configured → persisted → file → hostname. The 5000-name list the operator
+supplied lives at `assets/node-names.txt` in the Sylvia repo and is seeded to
+`~/.sylvia/node-names.txt` by the installer (P3.4). Names are cosmetic:
+collisions resolve by `kid`, which is already in every card, envelope and the
+pairing `--check` flow.
+
+**The announcement** is one bounded line (≤280 chars, whitespace collapsed):
+`PUT {adminPath}/announcement` (loopback + bearer) and a `set_announcement`
+tool that **only the chatelaine session may call** — what is worth publishing
+is a judgement about the human's attention, not the operator's alone.
+
+**Live acceptance** (2026-10-20):
+
+| check | desk | avd |
+|---|---|---|
+| card without a bearer | 401 | 401 |
+| card with a bearer | 200 + minimal node extension | 200 + `{"name":"avd","platform":"android-x64","since":…,"announcement":""}` |
+| `/status` identity block | `{"name":"desk","nameSource":"config","platform":"win32-x64","kid":"7jsvWk5X142WqWk7","authSource":"derived","cardPublic":false}` | `{"name":"avd",…,"kid":"W0jttouSyxfHmnzx"}` |
+| announcement round-trip | — | `PUT` → card shows it |
+| raw install (generated token) | ✅ `test-p3-auth.mjs`: persisted 43-char token, 401 without it, no session created | — |
+
+**Tests**: 139 unit (+8 identity) and **six** harnesses (+ `test-p3-auth.mjs`),
+all green; `npm test` ≈ 19 s.
+
+**A bug the tests caught**: the generated-token path used `dirname` without
+importing it, and the surrounding `try/catch` swallowed the ReferenceError —
+so the token was never persisted and every authenticated request failed. The
+catch now logs, because a token nobody can read is a token nobody can share.
+
+**Remaining in P3**: P3.1 (session tagging + `allowA2AOnMetered`), P3.2 (daemon
+proxy + dashboard card), P3.3 (push notifications), P3.4 (installer seeding of
+the names file, registry join, docs).
