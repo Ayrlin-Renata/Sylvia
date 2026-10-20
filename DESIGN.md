@@ -1177,3 +1177,51 @@ package lands but imports fail and a dozen plugins deactivate. The installer
 now tracks when that fallback fired, reinstalls the CLI spec, re-prunes stock
 fork copies, and *proves* a nested peer resolves from the CLI tree, failing
 loudly instead of booting into `could not be resolved`.
+
+### 20.10 P1 authority core implemented (2026-10-19)
+
+Built as four dependency-free modules plus wiring, so the trust-critical code
+is unit-testable without a harness (`node:crypto` only, no DSH imports):
+
+- **`lib/authority.js`** — HKDF derivation (`nuncia/authority/hmac` and
+  `nuncia/bearer` as independent info strings: one pairing secret, two
+  capabilities, and a leaked token cannot sign), a **fixed-order canonical
+  encoding**, HMAC-SHA256 sign/verify, freshness (60 s skew, default 10 min
+  window ceiling), `(origin, target, jti)` binding, and a `JtiLedger` where
+  same-link replay is tolerated and cross-link reuse is a security event.
+  Canonicalization is injection-proof **by construction**: node names are a
+  token charset that excludes newlines and `=`, so no value can forge a field
+  boundary — the failure mode that would otherwise let one sign a payload and
+  declare another.
+- **`lib/grants.js`** — mint/revoke/list/`envelopeFor`, expiry evaluated at read
+  time (the drift rule needs no timer), atomic JSON persistence whose records
+  are **re-verified against the derived key on load** (a tampered file or a
+  rotated pairing secret resurrects nothing).
+- **`lib/inbound.js`** — the fail-down gate: no envelope ⇒ `peer`; valid ⇒
+  `intent`/`override` + jti recorded; anything else ⇒ `peer` + reason + security
+  event. Plus a bounded `SecurityLog` (evidence for `/status`, mirrored onto the
+  host bus as `nuncia/security-event`).
+- **`lib/outbound.js`** — attaches a live grant iff one exists (agent never sees
+  grant bytes), and treats a response claiming authority as `peer` +
+  `authority-in-response`.
+
+Surface: `POST {adminPath}/mint|revoke` (**loopback-only** — a bearer token alone
+would let a peer grant itself intent) and an extended `/status` carrying live
+tasks with their level, grants, and security events;
+`nuncia_authority_rejected_total` in the metrics; an AgentCard authority
+extension. Two tools register through an injected `tools` fiber (so the plugin
+still loads on a node without a tool runtime): `request_user_intent`
+(approval-gated mint; the approval **is** the authorization) and `a2a_send`.
+
+Verification: **67 unit tests** (tamper per field, expired, future-iat, window,
+binding, replay, canonicalization injection, persistence tamper/rotation) plus
+three end-to-end harnesses — smoke, authority-over-HTTP (mint → send as intent →
+tamper → fail down + one event → revoke), and tools (approval states, auto-attach
+observed in the peer's request body, unknown-peer guidance).
+
+Two honest constraints recorded: on `danger-full-access` the base bundle sets the
+approval policy to `never`, so `request_user_intent` refuses by design and the
+admin endpoint is the working path; and the receiving *agent* is not told its
+request carried intent (the level lives on the task record and in `/status`),
+because injecting it as prompt text would contradict "grants never enter
+agent-visible memory". That presentation question is left to §20.8.
