@@ -1397,7 +1397,11 @@ rm -f "\$web_log"
 node --expose-internals "$dsh_bin" web --port "\${SYLVIA_WEB_PORT:-3080}" --no-open >> "\$web_log" 2>&1 &
 web_pid=\$!
 ( for i in \$(seq 1 90); do
-    tok=\$(grep -o 'http://127\.0\.0\.1:[0-9]*/?token=[A-Za-z0-9]*' "\$web_log" 2>/dev/null | head -n1 || true)
+    # Token is base64url: it may contain '-' and '_'. Matching only
+    # [A-Za-z0-9] truncates the token at the first of those characters,
+    # which makes the browser open a corrupted link and land on 401 --
+    # intermittently, depending on the minted token. Hence the full class.
+    tok=\$(grep -o 'http://127\.0\.0\.1:[0-9]*/?token=[A-Za-z0-9_-][A-Za-z0-9_-]*' "\$web_log" 2>/dev/null | head -n1 || true)
     if [ -n "\$tok" ]; then
       sleep 2   # let the plugin tree settle before the first page request
       termux-open-url "\$tok" >/dev/null 2>&1 || true
