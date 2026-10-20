@@ -1796,3 +1796,56 @@ catch now logs, because a token nobody can read is a token nobody can share.
 **Remaining in P3**: P3.1 (session tagging + `allowA2AOnMetered`), P3.2 (daemon
 proxy + dashboard card), P3.3 (push notifications), P3.4 (installer seeding of
 the names file, registry join, docs).
+
+### 20.12.1 P3.1 executed — the A2A tag, and what the session format actually allows
+
+**The plan was wrong about the carrier, and only a live device could say so.**
+§20.12 P3.1 assumed the A2A tag would ride the durable session header
+(`meta.origin`). The v4 format refuses it: `dsh-session` validates the header
+on creation and allows **only** `origin: "subagent"` — anything else throws
+`session header origin must be "subagent"`, and the throw happens *inside* the
+agent creation, so the A2A task failed outright with
+`Agent execution error: session header origin must be "subagent"`. No other
+header field survives a restart, so there is no second durable field either.
+
+**What replaced it: the session id.** A2A sessions are now named
+`a2a-op-<level>-<taskId>` and `a2a-chatelaine-<uuid>`. The id is durable by
+construction (it *is* the session identity), it is what every other surface
+already keys on (records, events, the operator book, `agents.get`/`resume`), and
+it needs no host support. Consequences, all handled:
+- The record stays keyed by **task id**; `taskIdOfSessionId()` maps a tagged
+  session id back to its task, and the `session/event` and
+  `user-questions/request` listeners resolve records both ways.
+- The operator book stores the **tagged** session id, so the chatelaine can
+  reach a resumed operator after a restart.
+- sylvia-bridge recognises an A2A session by the id prefix
+  (`a2a-op-` / `a2a-chatelaine-`) instead of the header.
+
+**Live acceptance on the AVD (2026-10-20)** — a fake metered daemon on
+:3099 (the bridge's `daemonUrl` pointed at it) so the gate could be exercised
+without real metered data on an emulator; the bridge's poll hits confirmed it
+was live:
+
+| run | `allowA2AOnMetered` | turn/end | task |
+|---|---|---|---|
+| 1 | `false` | `aborted: hook — sylvia-netgate: metered` | killed by the gate |
+| 2 | `false` | `aborted: hook — metered (stream committed)` | killed after the stream committed |
+| 3 | `true` | **`completed`** | `TASK_STATE_COMPLETED`, artifact `EXEMPT OK` |
+
+So the gate really does stop A2A work by default (fail-closed), and the
+exemption really does let it finish. The abort reason also proves the P2 triage
+work: a gate-killed turn is reported as an abort, not as a success.
+
+**Two smaller findings from the same run.** (1) The v4 header has no room for
+"who made this session", so the id prefix is the only honest carrier — worth
+remembering before proposing any other header field. (2) The standalone P3
+harness ended with a win32 libuv assertion (`UV_HANDLE_CLOSING`) because the
+plugin's HTTP server was still open when `process.exit()` ran; the fix is to
+await the plugin's disposers and set `process.exitCode` instead of forcing the
+exit — the same trip the smoke harness hit earlier.
+
+**State now:** P3.0 done (auth always-on, generated bearer, private minimal
+card, announcement, admin token, name pool); P3.1 done (tag + metered
+exemption, unit + live); P3.2 in progress (daemon proxy + dashboard card —
+the proxy and the first card exist, the revoke/roster/events/badge work and
+the live daemon→nuncia→dashboard acceptance do not).

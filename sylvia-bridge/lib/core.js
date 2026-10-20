@@ -22,6 +22,11 @@ export const DEFAULT_CONFIG = {
   // Daemon unreachable / no fresh sample: 'allow' keeps running (desktop-safe),
   // 'pause' fails closed. Stale samples (older than staleAfterMs) count as unknown.
   onUnknown: 'allow',
+  // A2A sessions (nuncia operators + the chatelaine) are exempt from the
+  // metered gate when this is on (DESIGN §20.12 P3.1). Default OFF: the
+  // fail-closed posture is that metered data means no work, and an exemption
+  // is the human's decision to make.
+  allowA2AOnMetered: false,
   daemonUrl: 'http://127.0.0.1:3090',
   stateFile: '~/.sylvia/netstate.json',
   // Custom CSS inlined into every index render (see lib/index.js). Absent or
@@ -82,6 +87,42 @@ export function createBridgeCore(userConfig = {}, deps = {}) {
   const activeStream = new WeakSet(); // agents with a live assistant stream
   const pendingFinish = new Set();    // finish-stream waits: cancel on frame end
   const paused = new Map();           // agent -> { at, mode } — counted for resume notice
+  const exempt = new Set();           // agents that keep running while held
+
+  /**
+   * Is this agent an A2A session (nuncia operator or chatelaine)?
+   *
+   * The tag lives in the session's `origin` field — the one free-form field
+   * the v4 session header keeps (`dsh-session` `SessionStore.prepare` copies
+   * `meta.origin` verbatim into the header, where it survives restarts). The
+   * agent's own id is the session id, so the tag is readable from the live
+   * agent without a store lookup.
+   *
+   * @param {any} agent
+   * @returns {boolean}
+   */
+  function isA2AAgent(agent) {
+    const id = agent?.id ?? agent?.session?.header?.id ?? agent?.session?.id
+    if (typeof id !== 'string') return false
+    // The carrier is the SESSION ID, not the header: the v4 session format
+    // accepts only `origin: "subagent"` in the durable header (the live AVD
+    // run proved it — "session header origin must be \"subagent\""), and no
+    // other header field survives a restart. nuncia therefore names its A2A
+    // sessions `a2a-op-<level>-<taskId>` / `a2a-chatelaine-<uuid>`, which
+    // survives restarts because the id does.
+    return id.startsWith('a2a-op-') || id.startsWith('a2a-chatelaine-')
+  }
+
+  /** Mark an agent exempt (or not) from the metered gate. */
+  function setExempt(agent, value) {
+    if (value) exempt.add(agent)
+    else exempt.delete(agent)
+  }
+
+  /** Is this agent exempt right now? */
+  function isExempt(agent) {
+    return cfg.allowA2AOnMetered === true && (exempt.has(agent) || isA2AAgent(agent))
+  }
 
   function decide(sample) {
     if (!cfg.enabled || cfg.onMetered === 'allow') return false;
@@ -96,6 +137,13 @@ export function createBridgeCore(userConfig = {}, deps = {}) {
   }
 
   function pauseRunning(agent, isNew) {
+    // An A2A session (nuncia operator / chatelaine) keeps working while the
+    // gate is held, if the operator allowed that: inbound peer work must not
+    // die because the phone is on metered data.
+    if (isExempt(agent)) {
+      log('[sylvia-bridge] A2A session exempt from the metered gate');
+      return;
+    }
     if (cfg.pauseMode === 'immediate') {
       cancelNow(agent, isNew ? 'new work while paused' : 'immediate');
       return;
@@ -157,6 +205,7 @@ export function createBridgeCore(userConfig = {}, deps = {}) {
     status.delete(agent);
     pendingFinish.delete(agent);
     paused.delete(agent);
+    exempt.delete(agent);
   }
 
   /** 'agent/status' listener. New work arriving while held is cancelled in
@@ -204,9 +253,10 @@ export function createBridgeCore(userConfig = {}, deps = {}) {
         resumeOnReconnect: cfg.resumeOnReconnect,
         notifyPausedWork: cfg.notifyPausedWork,
         onUnknown: cfg.onUnknown,
+        allowA2AOnMetered: cfg.allowA2AOnMetered,
       },
     };
   }
 
-  return { onSample, track, untrack, onAgentStatus, onStreamFrame, getState };
+  return { onSample, track, untrack, onAgentStatus, onStreamFrame, getState, setExempt, isExempt };
 }

@@ -1491,6 +1491,31 @@ EOF
       note "starter assets/mobile.css not found (skipped) — nothing is injected until $SYLVIA_HOME/mobile.css exists"
     fi
   fi
+
+  # --- node name pool (nuncia's nodeNameFile) --------------------------------
+  # A fresh nuncia node without a configured name picks one at random from
+  # this list and remembers it, so no two fresh installs look alike. The list
+  # is the human's to replace: never overwrite an existing pool, and never
+  # rewrite it on a re-run. A missing pool is not fatal — nuncia falls back to
+  # the hostname.
+  if [ -f "$SYLVIA_HOME/node-names.txt" ]; then
+    skip "$SYLVIA_HOME/node-names.txt already exists"
+  else
+    local names_src="$SCRIPT_DIR/assets/node-names.txt"
+    if [ ! -f "$names_src" ] && [ ! -f "$SYLVIA_HOME/repo/assets/node-names.txt" ]; then
+      ensure_dir "$SYLVIA_HOME"
+      note "cloning Sylvia repo for assets/node-names.txt: $SYLVIA_REPO_URL"
+      [ -d "$SYLVIA_HOME/repo" ] || git clone --depth 1 "$SYLVIA_REPO_URL" "$SYLVIA_HOME/repo" \
+        || note "repo clone failed (skipped) — nuncia will name nodes after the hostname"
+    fi
+    [ -f "$names_src" ] || names_src="$SYLVIA_HOME/repo/assets/node-names.txt"
+    if [ -f "$names_src" ]; then
+      cp "$names_src" "$SYLVIA_HOME/node-names.txt" || note "could not seed the name pool (skipped)"
+      ok "seeded $SYLVIA_HOME/node-names.txt (nuncia picks a node name from it)"
+    else
+      note "assets/node-names.txt not found (skipped) — nuncia will name nodes after the hostname"
+    fi
+  fi
 }
 
 # =============================================================================

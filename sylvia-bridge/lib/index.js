@@ -30,6 +30,10 @@ export const Config = z.object({
   resumeOnReconnect: z.boolean().default(DEFAULT_CONFIG.resumeOnReconnect),
   notifyPausedWork: z.boolean().default(DEFAULT_CONFIG.notifyPausedWork),
   onUnknown: z.union([z.const('allow'), z.const('pause')]).default(DEFAULT_CONFIG.onUnknown),
+  // A2A sessions (nuncia operators + the chatelaine) keep working while the
+  // metered gate is held when this is on. Default off: metered data means no
+  // work unless the operator says otherwise (DESIGN §20.12 P3.1).
+  allowA2AOnMetered: z.boolean().default(DEFAULT_CONFIG.allowA2AOnMetered),
   daemonUrl: z.string().default(DEFAULT_CONFIG.daemonUrl),
   stateFile: z.string().default(DEFAULT_CONFIG.stateFile),
   cssFile: z.string().default(DEFAULT_CONFIG.cssFile),
@@ -79,6 +83,19 @@ export function apply(ctx, config) {
   ctx.on('agent/disposed', ({ agent }) => core.untrack(agent));
   ctx.on('agent/status', ({ agent, status }) => core.onAgentStatus(agent, status));
   ctx.on('agent/assistant-stream', ({ agent, frame }) => core.onStreamFrame(agent, frame));
+
+  // A2A sessions announce themselves by their SESSION ID (nuncia names its
+  // operator and chatelaine sessions `a2a-op-…` / `a2a-chatelaine-…`). The id
+  // is durable — the session header cannot carry a custom `origin` (the v4
+  // format allows only "subagent"), so a restarted operator is still
+  // recognised as exempt.
+  ctx.on('agent/created', ({ agent }) => {
+    const id = agent?.id ?? agent?.session?.header?.id ?? agent?.session?.id;
+    if (typeof id === 'string' && (id.startsWith('a2a-op-') || id.startsWith('a2a-chatelaine-'))) {
+      core.setExempt(agent, true);
+      ctx.logger?.info?.(`[sylvia-bridge] A2A session ${id} registered`);
+    }
+  });
 
   async function tick() {
     try {

@@ -188,3 +188,88 @@ test('disposed agent leaves the held set (no crash, no delivery)', () => {
   assert.equal(events.delivers.length, 0);
   assert.equal(core.getState().heldCount, 0);
 });
+
+// -- P3.1: the metered exemption for A2A sessions (DESIGN §20.12) ---------------
+
+/** An agent shaped like nuncia's: the A2A tag rides the SESSION ID.
+ *  (The v4 session header accepts only `origin: "subagent"`, so the id is the
+ *  only durable carrier — DESIGN §20.12 P3.1.) */
+function a2aAgent(id, level = 'peer') {
+  const sessionId = `a2a-op-${level}-${id}`;
+  return { id: sessionId, session: { id: sessionId, header: { id: sessionId } } };
+}
+
+test('A2A session is cancelled with the gate when the exemption is off', () => {
+  const { core, events } = harness();
+  const agent = a2aAgent('op-1');
+  core.track(agent);
+  core.onAgentStatus(agent, 'running');
+  core.onSample(METERED);
+  assert.equal(core.getState().state, 'held');
+  assert.equal(events.cancels.length, 1, 'default is fail-closed: no exemption');
+});
+
+test('A2A session keeps running when the exemption is on', () => {
+  const { core, events } = harness({}, { allowA2AOnMetered: true });
+  const agent = a2aAgent('op-1');
+  core.track(agent);
+  core.onAgentStatus(agent, 'running');
+  core.onSample(METERED);
+  assert.equal(core.getState().state, 'held', 'the gate is still held for everything else');
+  assert.equal(events.cancels.length, 0, 'the A2A session was not cancelled');
+  assert.equal(core.isExempt(agent), true);
+});
+
+test('new work on an exempt A2A session is not cancelled while held', () => {
+  const { core, events } = harness({}, { allowA2AOnMetered: true });
+  const agent = a2aAgent('op-2', 'intent');
+  core.track(agent);
+  core.onSample(METERED);
+  core.onAgentStatus(agent, 'running');
+  assert.equal(events.cancels.length, 0);
+});
+
+test('a non-A2A session is still cancelled while an A2A one is exempt', () => {
+  const { core, events } = harness({}, { allowA2AOnMetered: true });
+  const peer = { id: 'plain' };
+  const operator = a2aAgent('op-3');
+  core.track(peer);
+  core.track(operator);
+  core.onAgentStatus(peer, 'running');
+  core.onAgentStatus(operator, 'running');
+  core.onSample(METERED);
+  assert.equal(events.cancels.length, 1);
+  assert.equal(events.cancels[0].agent, peer);
+});
+
+test('an explicitly exempted agent is exempt even without the a2a tag', () => {
+  const { core, events } = harness({}, { allowA2AOnMetered: true });
+  const agent = { id: 'manual' };
+  core.track(agent);
+  core.setExempt(agent, true);
+  core.onAgentStatus(agent, 'running');
+  core.onSample(METERED);
+  assert.equal(events.cancels.length, 0);
+  core.untrack(agent);
+  assert.equal(core.isExempt(agent), false, 'untracking drops the exemption');
+});
+
+test('the exemption requires the flag: setExempt alone does not exempt', () => {
+  const { core, events } = harness();
+  const agent = a2aAgent('op-4');
+  core.track(agent);
+  core.setExempt(agent, true);
+  core.onAgentStatus(agent, 'running');
+  core.onSample(METERED);
+  assert.equal(events.cancels.length, 1);
+});
+
+test('the chatelaine session is recognised as A2A by its id', () => {
+  const { core } = harness({}, { allowA2AOnMetered: true });
+  const id = 'a2a-chatelaine-8f1c0a6e-1b2c-4d5e-9f10-223344556677';
+  const agent = { id, session: { id, header: { id } } };
+  core.track(agent);
+  core.onAgentStatus(agent, 'running');
+  core.onSample(METERED);
+  assert.equal(core.isExempt(agent), true);
+});
