@@ -1548,3 +1548,65 @@ Five questions, answered against the installed tree with `file:line` evidence:
 
 **Out of scope for P2**: hard tool/model caps per session (noted for later),
 panel buttons and netgate exemption (P3), Noise and key rotation (P4).
+
+### 20.11.1 P2 executed — chatelaine live on both nodes (2026-10-20)
+
+The §20.11 plan is implemented in `dsh-nuncia` (commits on `main`) and live on
+the desk harness and the AVD node. Execution notes and what reality added:
+
+**The P2.0 spike was worth its half day.** Four of its five questions changed
+the code, and one (B) moved P3 work into P2 as planned:
+- **Cross-session reporting exists**: `agents.get(id)` is live-only, the cold
+  path is `agents.resume({resumeSessionId})` — exactly the shipped session
+  controller's pattern. Handles are fiber-owned: a plugin reload disposes every
+  agent the plugin created, so the rule adopted throughout is *hold session ids,
+  re-resolve per delivery, never cache an Agent*.
+- `session/event` at plugin scope already sees **every** live session (the
+  scope filter admits untagged listeners); the old `record.agent.session !==
+  session` ownership guard was the only thing hiding them. Removed — routing is
+  by session id.
+- **Skills are not a system-prompt section** on this train: the catalog is
+  rebuilt at every `agent/pre-step` from the live registry, so registration
+  reaches already-running sessions. (Deferred until rules-as-skill is proven.)
+- **turn/end triage found a live bug**: the listener treated only
+  `kind === 'error'` as failure, so an A2A `cancelTask` (aborted) and blocked /
+  max-tokens turns all reported `TASK_STATE_COMPLETED`. Fixed: only `completed`
+  is success; `aborted`+`user` → CANCELED, everything else → FAILED with the
+  reason string; `cancelTask` marks the record terminal so the abort cannot
+  double-publish. The P2 harness drives this with an aborting fake agent.
+- **Archive is the ceiling** for pruning: no shipped session-data deletion.
+  Prune = `archiveSession({stopActivity:true})` + drop record + drop handle +
+  one chatelaine notice.
+
+**Shipped** (`lib/house.js`, `lib/operators.js`, `lib/chatelaine.js` + wiring):
+house workspace seeded with rules + local git identity (commits never depend on
+the host's global config — we have met "fatal: empty ident name" before);
+`GET|PUT {adminPath}/rules` loopback-only even with a bearer, one commit per
+write; operator book (persistent, read-time expiry, corrupt book refused);
+brief-before-first-turn via the durable inbox; `report_to_chatelaine` +
+`reply_to_operator`; question forwarding with an in-place answer so an A2A
+operator never hangs; per-task `operatorTtlMs` (7d) with a sweep; `/operators`
+roster + `/operators/prune` (dry-run supported); house/chatelaine/operators in
+`/status`. Tests: **131 unit** (house + operators added) + **5 harnesses**
+(p2 added), all green, `npm test` ≈ 16 s.
+
+**Live acceptance** (2026-10-20, both nodes, real wire):
+
+| step | desk | avd |
+|---|---|---|
+| house seeded, `git.ok` | ✅ `d9b1963 house rules: initial` | ✅ (`.git`, rules, `.nuncia/`) |
+| task completes, handle in metadata | ✅ `op_a3e32ce8ff0fddcf` in 4 s | ✅ `op_9c0dadb5e7bd3935`, `TASK_STATE_COMPLETED` |
+| brief persisted before the turn | ✅ `agent/inbox/spliced` + `user/message` in the operator session | ✅ (2 brief events) |
+| chatelaine adopted + contact notice | ✅ `session-04fb2136…` | ✅ `session-93281439…`, contact in store |
+| `/status` house + chatelaine + roster | ✅ | ✅ |
+
+The desk operator's own artifact line — "answering only from
+HOUSE-RULES.md" — is the prompt-level discipline working: the brief names the
+rules file and the level, and the model followed it without any hard cap.
+
+**Left for later (recorded, not forgotten)**: rules-as-skill (needs the
+plugin-scope registration shape proven), hard per-level tool/model caps (the
+reason operators are sessions, not subagents), and the P3 glue (panel buttons,
+netgate exemption, toasts, remembered peers). The `targetSession` spike is
+effectively answered: chatelaine↔operator is cross-session reporting over
+`resume` + `inject`, no new primitive needed.
