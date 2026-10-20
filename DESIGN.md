@@ -1287,3 +1287,25 @@ lands in the session store as
 and `time-context` sources. The same session's request header shows `a2a_send`
 registered — the injected `tools` fiber works in the real harness, not only in
 the fake-ctx tests.
+
+**One secret really is one config (P1 pairing fix).** Enabling authority on a
+GUI-launched harness failed the plugin load with
+`auth is configured but no bearer token is available`: `auth.tokenEnv` named a
+variable that process never had, and the only alternative was restarting the
+whole session to inject one. Two changes remove the trap:
+
+- the bearer is **derived** from the pairing secret when authority is on —
+  precedence `auth.token` → `auth.tokenEnv` → derived. A paired node already
+  derives a bearer to talk to its peers; requiring a *second*, separately
+  exported token for its own endpoint was incidental complexity, and for a
+  two-node demo it was also a correctness bug (the peer would present the
+  derived token while the endpoint demanded the env one).
+- `authority.pairingSecret` accepts the secret inline for hosts whose
+  environment is fixed at launch. The env var still wins, so an operator who can
+  export it cannot be silently overridden by a stale config file; the file-based
+  form is only as private as the file, which the README says plainly.
+
+Deployed to the AVD: its `auth.tokenEnv` is gone, the derived token answers 200
+and the old env token answers 401 — exactly the intended migration. The PC
+profile (`~/.dsh/profiles/web/cordis.patch.yml`) carries the same secret as the
+AVD, so both nodes derive the same bearer and no token is ever copied.
