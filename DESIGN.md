@@ -1099,13 +1099,25 @@ residuals are accepted consciously, not overlooked.
 ### 20.8 Open decisions
 
 - Native dialog surface per platform (desktop vs Android) — config surface.
-- `targetSession` feasibility → decided by the P3 spike.
 
 Decided 2026-10-19: authority vocabulary = `peer` / `house` / `intent` /
 `override`; operator orchestration lives inside the plugin; pairing = env
 paste (`NUNCIA_PAIRING_SECRET`); house rules = single file in a tiny git
 repo with auto-committed history; nuncia gets its own EN + ZH READMEs
 acknowledging MicroWearld's original.
+
+Resolved 2026-10-19 (was open in this section): **how the receiving agent learns
+that a request arrived with intent.** It is told — level, peer, scope and
+remaining time, never grant bytes — as an injected notice on window open, on
+lapse, and on a bounced claim. The original "grants never enter agent-visible
+memory" was too literal: what must never enter it is a *token it could replay*.
+Authority it already holds is state, not a secret, and a chatelaine that cannot
+see its own window cannot manage it.
+
+Also resolved here: the prompt surface question is narrower than assumed. The
+Web UI composer card (`ctx.userQuestions`) is **not** behind the approval policy
+and therefore still prompts under `danger-full-access`, so the native dialog is
+only needed for *headless/terminal* nodes, not for the web case.
 
 ### 20.9 P0 done — ported, installed, live on the AVD (2026-10-19)
 
@@ -1213,15 +1225,42 @@ extension. Two tools register through an injected `tools` fiber (so the plugin
 still loads on a node without a tool runtime): `request_user_intent`
 (approval-gated mint; the approval **is** the authorization) and `a2a_send`.
 
-Verification: **67 unit tests** (tamper per field, expired, future-iat, window,
-binding, replay, canonicalization injection, persistence tamper/rotation) plus
-three end-to-end harnesses — smoke, authority-over-HTTP (mint → send as intent →
-tamper → fail down + one event → revoke), and tools (approval states, auto-attach
+Verification: **82 unit tests** (tamper per field, expired, future-iat, window,
+binding, replay, canonicalization injection, persistence tamper/rotation,
+notices, broker) plus three end-to-end harnesses — smoke, authority-over-HTTP
+(mint → send as intent → tamper → fail down + one event → revoke → expiry notice),
+and tools (approval states and the full three-surface ladder, auto-attach
 observed in the peer's request body, unknown-peer guidance).
 
-Two honest constraints recorded: on `danger-full-access` the base bundle sets the
-approval policy to `never`, so `request_user_intent` refuses by design and the
-admin endpoint is the working path; and the receiving *agent* is not told its
-request carried intent (the level lives on the task record and in `/status`),
-because injecting it as prompt text would contradict "grants never enter
-agent-visible memory". That presentation question is left to §20.8.
+Two gaps were closed in the follow-up commit (§20.10.1), so the two "honest
+constraints" recorded here no longer stand as constraints:
+
+- The approval seam *is* policy-gated (`dsh-user-approval` returns `rejected`
+  before its waterfall when policy is `never`), but **`ctx.userQuestions` is
+  not** — it dispatches an independent `user-questions/request` event with no
+  approval dependency, so the Web UI composer card still prompts under
+  `danger-full-access`. `request_user_intent` therefore tries approval → card →
+  plugin-owned broker queue, and mints only on `allowed-once`.
+- The receiving agent **is** told: notices inject level, peer, scope and
+  remaining time (never grant bytes) on window open, lapse and bounced claim.
+  The original wording conflated "a token it could replay" with "state it
+  already holds"; only the first has to stay out of agent-visible memory.
+
+### 20.10.1 The approval ladder and agent notices (2026-10-19)
+
+Implemented as `lib/approvals.js` + `lib/notices.js` and wired through
+`decideApproval`:
+
+| order | surface | answers when |
+|---|---|---|
+| 1 | `ctx.approval.request` | policy permits prompting; `never` ⇒ `rejected` immediately, without a human |
+| 2 | `ctx.userQuestions.askTimed` | a client is attached to the live **root** agent; bounded at 120 s, `{pending:true}` falls through rather than hanging the turn |
+| 3 | `ApprovalBroker` | headless / no client / card unanswered — decided via loopback `/requests` + `/requests/decide`, or an `approveCommand` hook given `NUNCIA_APPROVAL_ID`/`NUNCIA_APPROVAL_REASON` |
+
+Fail-closed rules: only `allowed-once` mints; expiries resolve `timeout`, unload
+resolves `cancelled`, and an unknown id is a refusal, not an error page. The
+host's identity gates do useful work here — only the live root agent can ask, so
+a subagent cannot mint authority for itself. Notices ride `agent.inject`, which
+is model-visible but cannot wake the driver (that is the point: an idle chatelaine
+learns on its next turn), with a sweep timer so lapse is announced even when
+nothing else happens.
