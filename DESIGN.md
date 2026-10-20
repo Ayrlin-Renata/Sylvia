@@ -1309,3 +1309,27 @@ Deployed to the AVD: its `auth.tokenEnv` is gone, the derived token answers 200
 and the old env token answers 401 — exactly the intended migration. The PC
 profile (`~/.dsh/profiles/web/cordis.patch.yml`) carries the same secret as the
 AVD, so both nodes derive the same bearer and no token is ever copied.
+
+**A node must listen where its card says it does.** The PC node answered on the
+harness port (`3080`) while `agentCard.url` advertised `4123`: with a
+`webServer` service present the plugin mounted its routes there and ignored
+`host`/`port`. That is fine for a single UI-backed node and wrong for one whose
+peers dial a stable address — the A2A endpoint also ends up sharing a port with
+the UI (and its auth). New `mount: auto|webserver|standalone`; both profiles now
+set `standalone`, so `4123` is real on each node and the 3080 mount is gone.
+
+**P1 acceptance — two nodes, real wire, 2026-10-19.** `desk` (PC, 4123,
+standalone) ↔ `avd` (emulator 4123, reached from the PC through
+`adb forward tcp:14123 tcp:4123`), one shared secret, derived bearer on both.
+
+| step | result |
+|---|---|
+| mint on `desk` for target `avd` (120 s, scope `demo`) | 201, envelope `origin=desk target=avd level=intent` |
+| `SendMessage` carrying that envelope to `avd` | `TASK_STATE_COMPLETED`, reply `INTENT OK` |
+| `avd` `/status` | task recorded `level=intent scope=demo`, **0** security events |
+| 3 s window: message inside it | completed, task `intent` |
+| same envelope after expiry | completed as `peer` + `authority-rejected:expired` (fail-down, not an error) |
+| `revoke` on `desk`, then a message without an envelope | grants 0, `avd` completes it as `peer` (`PEER AGAIN`) |
+
+That is L2 honored, the drift rule observable on the wire, and revocation
+mid-conversation — with the peer never failing a turn over authority.
