@@ -1425,115 +1425,126 @@ completed model reply. That is environmental, not an authority-layer finding.
 ### 20.11 P2 plan — the Chatelaine layer (2026-10-20)
 
 **Why this is P2 and not polish.** Watching the AVD sessions after the P1
-acceptance made the gap concrete: a one-line peer message ("Reply with exactly:
-INTENT OK") produced session work far out of proportion to it — the task-shaped
-session is created before anyone decides whether the request deserves work, and
-nothing bounds what an `peer`-level caller can set in motion. P1 authenticates
-*who* is talking; P2 governs *how much happens*. The chatelaine is the intake
-discipline that turns an authenticated message into a bounded, attributable,
-expiring piece of work.
+acceptance made the gap concrete: a one-line peer message produced session work
+far out of proportion to it — the task-shaped session exists before anyone
+decides whether the request deserves work, and nothing connects an operator's
+doubt to the person who could answer it. P1 authenticates *who* is talking; P2
+governs *how much happens, and who gets told*.
 
-**Shape: one chatelaine session, one operator per task.** The chatelaine is a
-long-lived session in the Housekeeping workspace; each accepted task becomes an
-operator session (today's Task↔Session mapping, kept) stamped with a handle,
-a level, a scope and an expiry. Operators report through the task's artifacts;
-the chatelaine supervises by notice, not by owning every turn. This keeps the
-proven executor path and adds supervision rather than a second agent runtime.
+**Topology decided with the operator (2026-10-20).** Operators are **real
+sessions in the Housekeeping workspace**, not subagent children. A subagent
+child is cheap but constrained in ways that matter here: it cannot take a
+per-operator model, and its reporting/approval surfaces are fixed by the
+parent. Sessions give us the controls this layer needs — model, cwd, preset and
+(later) tool policy per authority level — and they survive the parent's turn.
+The cost is that supervision must be built: a **stable Chatelaine session**
+plus a reporting primitive that crosses sessions. That pulls the P3
+`targetSession` spike forward to **P2.0-B**; if it proves infeasible, the
+fallback is the subagent runtime and this section is revised rather than
+half-shipped.
 
-#### P2.0 — research spike (before code; ~half a day)
+**Discipline is prompt-level for now (operator decision).** No hard caps in P2:
+operators get an initial brief derived from the authority/trust level, told to
+notify the chatelaine before consequential execution and again on completion.
+Hard tool/model limits are a later development, but the session runtime is
+chosen now so that when they arrive they are a config change, not a rewrite.
 
-Four questions, each answered against the installed tree, not the docs:
+#### P2.0 — research spike (before code; read-only)
 
-1. **Skills** — `skills` service exposes `register(skill)` (skill-file/offical
-   packages feed it). What is the registered shape, when is the system prompt
-   assembled relative to registration, and does a plugin-registered skill reach
-   sessions the plugin creates? If it does, house rules ship as a skill; if not,
-   the same text is injected as a durable notice at operator creation.
-2. **Per-level restriction** — what can a plugin actually constrain on an agent
-   it creates? Known: `meta.cwd` and `meta.agentPreset` (preset controls the
-   tool set), `agentOptions.model`. Unknown: whether a preset can be mounted
-   from a plugin-supplied cordis file without writing into `$DSH_HOME/config`.
-   This decides whether `peer` tasks are *structurally* answer-only or only
-   instructed to be.
-3. **Pruning** — `workspaceRegistry.archiveSession(sessionId)` exists;
-   `FileTaskStore` has no `delete`. Confirm what a pruned task should leave
-   behind (archived session + deleted task record + dead handle), and the
-   cheapest correct implementation.
-4. **Supervision channel** — can a notice be injected into a *specific* session
-   by id (the chatelaine) from the plugin, and does it behave like the existing
-   `agent.inject` path (durable, no wake)?
+Five questions, answered against the installed tree with `file:line` evidence:
+
+- **A — skills reach.** `skills.register(skill)` shape; when system prompts are
+  assembled relative to registration; does a plugin-registered skill reach
+  sessions the plugin creates?
+- **B — cross-session reporting (the uplift from P3).** How a plugin addresses a
+  session it did not create in this turn: `agents.get(id)`? `resume`?
+  `sessions` service? Does `agent.inject` work for that session, and does the
+  injected message stay durable without waking a turn? This decides whether the
+  chatelaine can be a long-lived session woken only by notices.
+- **C — question forwarding.** `user-questions/request` is a waterfall (the
+  earlier research proved it survives `danger-full-access`). Can a plugin tap it
+  for operator sessions, forward the question to the chatelaine, and answer it —
+  so an A2A operator never blocks on a human who is not watching that session?
+- **D — unexpected ends.** The `turn/end` reason taxonomy; what is observable
+  when a session stops abnormally (error / cancel / process death), and what the
+  last assistant text looks like at that moment.
+- **E — pruning + presets.** Confirm `workspaceRegistry.archiveSession` /
+  `attachSession` semantics, what a pruned task should leave behind, and whether
+  a preset can be mounted from plugin-supplied config without writing into
+  `$DSH_HOME/config`.
 
 #### P2.1 — Housekeeping workspace + house rules
 
 - `chatelaine.workspace` (default `~/.sylvia/housekeeping`, `~` expanded),
-  created if absent; `chatelaine.rulesFile` (default `HOUSE-RULES.md`),
-  `chatelaine.rulesRepo` (git dir; initialised with one commit if absent).
-- Every rules edit goes through `GET|PUT {adminPath}/rules` (loopback + bearer),
-  is written, then auto-committed (`house rules: <summary>` + body). Agents get
-  read-only access via the skill/notice; unsigned local edits are local-trust.
-- Seed rules cover the design's conventions: short immediate report on contact;
-  concise completion report; escalate decisions; verify envelopes not claims;
-  security event → notify; never assume a reply carries intent.
+  created if absent; `chatelaine.rulesFile` (default `HOUSE-RULES.md`) in a
+  local git repo (no remote), initialised with one commit if absent.
+- Edits only through `GET|PUT {adminPath}/rules` (loopback + bearer), written
+  then auto-committed (`house rules: <summary>` + body). Agents read via the
+  skill/notice; unsigned local edits are local-trust.
+- Seed rules: short immediate report on contact; concise completion report;
+  escalate consequential decisions before acting; verify envelopes, never text
+  claims; security event → notify; never assume a reply carries intent.
 
-#### P2.2 — Intake policy (the part that answers the observation)
+#### P2.2 — Chatelaine session + reporting primitive
 
-- `chatelaine.intake: "triage"` (default) — each task starts with a bounded
-  first step: restate the request in one line, state what it will do, and stop.
-  `"direct"` preserves today's behaviour.
-- Level policy table: `chatelaine.policy.peer` (default `answer-only`) and
-  `.intent` (default `full`). `answer-only` means: housekeeping cwd (scratch),
-  peer preset/model when P2.0 proves one can be mounted, and an instruction to
-  answer from house rules or ask for an intent grant — never to start file work
-  or long jobs. Full means: configured operator cwd, operator preset/model,
-  scope text from the envelope.
-- The per-task record stores which policy applied, so `/status` can show why a
-  task was bounded.
+- One stable chatelaine session (`chatelaine.sessionId` configurable, else
+  created once and its id stored in `~/.sylvia/nuncia/chatelaine.json`), cwd =
+  workspace, preset = `chatelaine.preset` (default the configured operator
+  preset). Survives operator churn; `/status` reports whether it is live.
+- Plugin tool `report_to_chatelaine({summary, question?, urgency?})`: injects a
+  durable notice into that session (no wake for `info`; wake for `question`),
+  returns immediately. This is the operator's only sanctioned escalation path.
+- Chatelaine brief: it is the user's representative — decide from house rules
+  and prior instruction whether an escalation matters, answer what it can,
+  aggregate the rest for the human.
 
-#### P2.3 — Operator handles
+#### P2.3 — Operator intake, handles, initial brief
 
-- `op_<16 hex>` minted per accepted task, returned in the task's first result
-  event and recorded in `operators.json` (handle → taskId, sessionId, level,
-  scope, expiresAt, state).
-- Re-contact: `metadata.operator` (preferred) or a bare `op_…` in the message
-  text resolves to the existing task/session; unknown handle → JSON-RPC error
-  naming the expected format (not a silent new task).
-- Handle is a lookup convenience only — it carries no authority; the envelope
-  is still the only thing that can raise a level.
+- Handle `op_<16hex>` minted per accepted task; returned in the task's first
+  event; recorded in `operators.json` (handle → taskId, sessionId, level,
+  scope, expiresAt, state). Re-contact via `metadata.operator` or a bare
+  `op_…` in the text; unknown handle → explicit JSON-RPC error, not a new task.
+  Handles are lookups, never authority.
+- Initial brief per task, built by the plugin: one-line restatement first, the
+  level (`peer`/`house`/`intent`), the scope if granted, expiry, the reporting
+  duty, and "never wait on the user directly — ask the chatelaine".
+- Session creation gains `meta.cwd` = workspace, workspace attachment, and the
+  per-level model override (peer may run a cheaper route; intent the operator
+  model) — both first-class because operators are sessions.
 
-#### P2.4 — Expiry and pruning (7 days)
+#### P2.4 — Supervision hooks
+
+- `turn/end` with an error reason → chatelaine notice carrying the task, the
+  last assistant line and the reason (the "ended unexpectedly" rule).
+- `user-questions/request` from an operator session → forwarded to the
+  chatelaine (P2.0-C); while forwarded, the operator is told the question went
+  to the chatelaine rather than hanging silently.
+- Authority rejections keep the existing per-task notice and additionally
+  notify the chatelaine (one line: peer, reason, task, time) and fire
+  `approveCommand` with `NUNCIA_EVENT=authority-rejected`.
+
+#### P2.5 — Expiry, pruning, roster
 
 - Per-task `expiresAt` from `chatelaine.operatorTtlMs` (default 7d), overriding
-  the global `taskTtlMs`; the sweep runs on the existing cleanup timer.
-- Prune = archive the session (`workspaceRegistry.archiveSession`), delete the
-  task record (needs a store `delete`), drop the handle, publish a one-line
-  notice to the chatelaine, and count `nuncia_operators_pruned_total`.
-- `POST {adminPath}/operators/prune` (dry-run flag) for on-demand sweeps.
-
-#### P2.5 — Security events reach a human path
-
-- Every authority rejection already lands in the ring buffer; P2 also notifies
-  the chatelaine session (one line: peer, reason, task, time) and fires the
-  optional `approveCommand` hook (`NUNCIA_EVENT=authority-rejected`) so a
-  Termux notification/panel can pick it up on Sylvia nodes.
-- `/status` grows an `operators` array (handle, level, scope, age, expiry,
-  state) so the panel can render the roster.
+  the global `taskTtlMs`; the sweep rides the existing cleanup timer.
+- Prune = archive the session, delete the task record (store needs `delete`),
+  drop the handle, one-line chatelaine notice, `nuncia_operators_pruned_total`.
+- `POST {adminPath}/operators/prune` (dry-run flag); `/status` grows an
+  `operators` array (handle, level, scope, age, expiry, state).
 
 #### Acceptance for P2
 
-1. Peer message with no envelope, `triage` policy: chatelaine records a
-   one-line restatement; no file writes; handle minted; task expires per
-   config.
-2. Same message with a valid `intent` envelope: full operator, scope applied,
-   completion report as artifact, handle re-contact routes into the same
-   session.
-3. Rules edit → commit exists (`git log` shows it); agent reads rules but
-   `PUT` from a non-loopback address is refused.
-4. Expiry: with a 5 s TTL, session archived + task record gone + handle dead +
-   one notice at the chatelaine; `nuncia_operators_pruned_total` incremented.
-5. Forged envelope → task completes as `peer`, event `signature`, one line to
-   the chatelaine — and (if P2.0 proves presets) the bounded policy applied.
+1. Peer message, no envelope: one-line restatement, handle minted, chatelaine
+   notified of contact; nothing written outside the workspace.
+2. Same message with a valid `intent` envelope: full operator under scope,
+   completion report as artifact, handle re-contact lands in the same session.
+3. Rules edit commits (`git log`), agent can read them, non-loopback `PUT`
+   refused.
+4. An operator that hits an error, or asks a question, produces exactly one
+   chatelaine notice with the operator's last line — and the task does not hang
+   waiting for a human.
+5. 5 s TTL: session archived, record gone, handle dead, one prune notice.
+6. Forged envelope: completes as `peer`, `signature` event, chatelaine notice.
 
-**Out of scope for P2**: cross-session messaging (`targetSession`, P3), the
-panel buttons and netgate exemption (P3), Noise and key rotation (P4). Turning
-the peer-visible card's `skills` into real A2A skills is deferred until P2.0
-tells us whether a plugin can contribute one.
+**Out of scope for P2**: hard tool/model caps per session (noted for later),
+panel buttons and netgate exemption (P3), Noise and key rotation (P4).
