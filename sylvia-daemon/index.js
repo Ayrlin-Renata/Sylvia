@@ -17,6 +17,7 @@ import { createDiscoverer } from "./src/discover.js";
 import { createHarnessControl } from "./src/harness.js";
 import { createTransport } from "./src/transport.js";
 import { createA2AProxy } from "./src/a2aproxy.js";
+import { loadDaemonSecrets } from "./src/secrets.js";
 import path from "node:path";
 
 const log = makeLog();
@@ -81,7 +82,23 @@ export async function main(env = process.env) {
 	// A2A proxy (§20.12 P3.2) — the panel's route to the nuncia plugin's
 	// admin surface. The daemon is a loopback client, so the plugin's own
 	// loopback-only guard stays exactly as it is.
-	const a2a = createA2AProxy({ config });
+	// The admin token: the environment wins, else the encrypted vault
+	// (DESIGN §20.12.3). A missing token is not fatal — the proxy answers
+	// 503 with a clear reason, and the panel says so.
+	const daemonSecrets = loadDaemonSecrets({
+		stateDir: config.stateDir,
+		envToken: config.a2aAdminToken,
+		vaultFile: config.a2aVaultFile,
+		env: process.env
+	});
+	if (daemonSecrets.source === "vault") {
+		log("a2a: admin token read from the encrypted vault");
+	} else if (daemonSecrets.source === "env") {
+		log("a2a: admin token read from the environment");
+	} else {
+		log("a2a: no admin token (neither the environment nor the vault has one) — the panel's A2A controls will report 503");
+	}
+	const a2a = createA2AProxy({ config: { ...config, a2aAdminToken: daemonSecrets.token } });
 
 	const api = createApi({
 		config,

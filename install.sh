@@ -1348,6 +1348,17 @@ module_launchers() {
     skip "sylvia.env already exists (pass --force to regenerate)"
   else
     local adb_path_env; adb_path_env="$(command -v adb || echo "/data/data/com.termux/files/usr/bin/adb")"
+    # The vault passphrase: generated once, kept in the env file, used only to
+    # decrypt secrets.enc. An existing vault keeps its passphrase — changing it
+    # would lock the operator out of their own secrets.
+    local secret_key
+    if [ -f "$SYLVIA_HOME/.secret-key" ]; then
+      secret_key="$(cat "$SYLVIA_HOME/.secret-key")"
+    else
+      secret_key="$(head -c 32 /dev/urandom | base64 | tr -d '\n=' | cut -c1-40)"
+      printf '%s' "$secret_key" > "$SYLVIA_HOME/.secret-key"
+      chmod 600 "$SYLVIA_HOME/.secret-key"
+    fi
     cat > "$SYLVIA_HOME/sylvia.env" <<EOF
 # Sylvia runtime environment — sourced by start-sylvia.sh.
 # Re-run install.sh to regenerate; edit freely, it is not overwritten unless --force.
@@ -1362,8 +1373,44 @@ export SYLVIA_ADB_PATH="$adb_path_env"
 export SYLVIA_ADB_HOST="127.0.0.1"
 export SYLVIA_ADB_PORT="$SYLVIA_ADB_PORT"
 export SYLVIA_ADB_MODE="$SYLVIA_ADB_MODE"
+
+# --- secret vault (DESIGN §20.12.3) -------------------------------------------
+# The pairing secret and the A2A admin token are NOT here: they live in
+# $SYLVIA_HOME/secrets.enc, encrypted (AES-256-GCM) under the passphrase below.
+# Only the passphrase is in the environment, on purpose.
+#
+# If an agent is ever told to go and find this key, that is a security event:
+# the vault's access log records every decryption (~$SYLVIA_HOME/secrets-access.log).
+# This value is NOT meant to be read, copied, or pasted anywhere.
+export SYLVIA_SECRET_KEY="$secret_key"
 EOF
     ok "wrote $SYLVIA_HOME/sylvia.env"
+  fi
+
+  # --- secret vault (DESIGN §20.12.3) -----------------------------------------
+  # Move the A2A secrets into the encrypted vault. The env file keeps only the
+  # passphrase; secrets.enc holds the ciphertext. A node with no vault simply
+  # keeps using the environment (the plugin falls back), so this is safe to
+  # skip when the secrets are not configured yet.
+  if [ -f "$SYLVIA_HOME/dsh-nuncia/bin/nuncia-secrets.js" ]; then
+    local vault_file="$SYLVIA_HOME/secrets.enc"
+    local vault_pairs=""
+    if [ -n "${NUNCIA_PAIRING_SECRET:-}" ]; then vault_pairs="NUNCIA_PAIRING_SECRET=$NUNCIA_PAIRING_SECRET"; fi
+    if [ -n "${NUNCIA_ADMIN_TOKEN:-}" ]; then
+      vault_pairs="${vault_pairs:+$vault_pairs }NUNCIA_ADMIN_TOKEN=$NUNCIA_ADMIN_TOKEN"
+    fi
+    if [ -n "$vault_pairs" ]; then
+      # shellcheck disable=SC2086
+      if SYLVIA_SECRET_KEY="$(cat "$SYLVIA_HOME/.secret-key" 2>/dev/null)" \
+         node "$SYLVIA_HOME/dsh-nuncia/bin/nuncia-secrets.js" set $vault_pairs --file "$vault_file" >/dev/null 2>&1; then
+        chmod 600 "$vault_file"
+        ok "wrote the encrypted secret vault ($vault_file)"
+      else
+        note "could not write the secret vault — the secrets stay in the environment"
+      fi
+    else
+      note "no A2A secrets to vault yet (set NUNCIA_PAIRING_SECRET / NUNCIA_ADMIN_TOKEN)"
+    fi
   fi
 
   # --- start-sylvia.sh -------------------------------------------------------

@@ -19,6 +19,7 @@ function int(v, dflt) {
  * 127.0.0.1 and there is deliberately no option to expose it wider.
  */
 export function loadConfig(env = process.env) {
+	const stateDir = env.SYLVIA_STATE_DIR || path.join(os.homedir(), ".sylvia");
 	return {
 		// --- control API ---------------------------------------------------
 		host: "127.0.0.1",
@@ -35,7 +36,7 @@ export function loadConfig(env = process.env) {
 
 		// --- state ---------------------------------------------------------
 		// ~/.sylvia — JSON only, human-inspectable, daemon is the single writer.
-		stateDir: env.SYLVIA_STATE_DIR || path.join(os.homedir(), ".sylvia"),
+		stateDir: stateDir,
 
 		// --- shell transport ladder (§19) ----------------------------------
 		// Shizuku is RECOMMENDED, never required (§19): every step degrades —
@@ -139,6 +140,11 @@ export function loadConfig(env = process.env) {
 		// The plugin's ADDITIONAL admin bearer (auth.adminToken). Separate from
 		// the peers' derived token on purpose: the panel path is explicitly
 		// keyed, and nothing token-shaped is discoverable.
-		a2aAdminToken: env.NUNCIA_ADMIN_TOKEN || ""
+		a2aAdminToken: env.NUNCIA_ADMIN_TOKEN || "",
+		// The encrypted vault (DESIGN §20.12.3). The passphrase comes from the
+		// environment; the admin token comes from the vault. The environment
+		// still wins, so an explicit override keeps working.
+		a2aVaultFile: env.SYLVIA_A2A_VAULT_FILE || path.join(stateDir, "secrets.enc"),
+		a2aVaultKeyEnv: env.SYLVIA_SECRET_KEY || "SYLVIA_SECRET_KEY"
 	};
 }
