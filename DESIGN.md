@@ -2277,3 +2277,49 @@ report in the inbox, and the next wake picks it up.
 The registry last-seen join, a dedicated README A2A section, and the arm64
 physical-device acceptance. None of them block P4; they should be picked up
 before calling §20 finished.
+### 20.14.7 P4.1 as built — two DSH constraints that decide visibility
+
+The chatelaine is now created at boot, in its own directory, attached to its own
+workspace, briefed and woken once. The implementation had to respect two
+properties of DSH that are not obvious and that the first attempt got wrong:
+
+**A session is listed only if it is attached to a workspace record.** The client
+groups by `workspace.sessionIds` and everything else falls into an ungrouped
+bucket (`dsh-client-ui-workspace`, `owningGroupKey`). The plugin created the
+session and never called `attachSession`, so the human could not see or open it
+— verified in `~/.dsh/storages/workspace.json`, where the `Housekeeping` record
+listed three operators and no chatelaine.
+
+**The label is the basename of the workspace path, and the workspace path must
+equal the session's own `header.cwd`.** `attachSession` normalizes
+`header.cwd`, requires it to resolve, and validates it against the workspace
+path. A session's cwd is fixed in its v4 header and cannot be changed, so a
+chatelaine created under the operators' directory can NEVER be attached to a
+`Chatelaine` workspace. Sharing the operators' directory would also label it
+`housekeeping`, indistinguishable from a worker.
+
+Consequences, all implemented:
+
+* default `chatelaine.cwd` is `<housekeeping workspace>/chatelaine`, giving a
+  workspace titled `Chatelaine` whose basename reads as the chatelaine's name;
+* the directory is created **before** the session. A session created ahead of
+  its directory fails its first turn with
+  `working-directory: directory does not exist` — observed live on the AVD;
+* on boot, a stored session whose cwd differs from the configured one is
+  **relocated**: a fresh session is created in the right directory and the old
+  id is kept as `previousSessionId`. Without this, an upgraded node keeps an
+  invisible chatelaine forever;
+* `ensure()` is idempotent: an existing session is resumed (never recreated) and
+  a briefed session is not re-briefed, so a plugin reload costs no turn;
+* `POST {adminPath}/chatelaine/new` and `bin/nuncia-chatelaine.js new` cut over
+  to a fresh session, brief it and wake it, so a handoff can be pasted in by
+  hand. `GET {adminPath}/chatelaine` (and `nuncia-chatelaine.js show`) report
+  where the thread is.
+
+Live: PC `a2a-chatelaine-15bfde54…` and AVD `a2a-chatelaine-98d88e68…`, both in
+`<housekeeping>/chatelaine`, both attached (`workspace.json` shows the session
+in the record), both briefed (`briefVersion: 1`) and both running a real first
+turn. Acceptance is `tests/test-p4-chatelaine.mjs` (28 checks), which uses a
+strict `agents.resume` (a session that was never created cannot be resumed) and
+a `workspaceRegistry` that refuses to attach a session whose header cwd is
+missing — the two permissive fakes that hid this class of bug.
