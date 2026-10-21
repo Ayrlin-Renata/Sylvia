@@ -10,7 +10,7 @@
 // device, so it cannot import across the plugin boundary).
 
 import { createDecipheriv, scryptSync } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -20,6 +20,23 @@ export const SECRET_KEY_ENV = "SYLVIA_SECRET_KEY";
 /** The default vault location. */
 export function defaultVaultPath(stateDir) {
 	return join(stateDir || join(homedir(), ".sylvia"), "secrets.enc");
+}
+
+/**
+ * The default audit-trail location — the tripwire log that records every
+ * vault decryption.
+ *
+ * It must be a SIBLING of the vault. An earlier version derived it by
+ * stripping ".enc" and appending "/secrets-access.log", which produced
+ * "<stateDir>/secrets/secrets-access.log" — a directory that never exists,
+ * so every append failed, was swallowed, and the daemon's audit trail
+ * silently recorded nothing.
+ *
+ * @param {string} [stateDir]
+ * @returns {string}
+ */
+export function defaultAuditPath(stateDir) {
+	return join(stateDir || join(homedir(), ".sylvia"), "secrets-access.log");
 }
 
 /**
@@ -92,6 +109,24 @@ export function resolveAdminToken(options = {}) {
  * @param {Record<string, string|undefined>} [options.env]
  * @returns {{token: string, source: string, vaultFile: string, passphrase: string|undefined}}
  */
+/**
+ * Record that the daemon opened the vault — the same tripwire the plugin
+ * keeps. A line here means the daemon decrypted the secrets.
+ * @param {string} auditFile
+ * @param {{source: string, values?: string[]}} detail
+ */
+export function recordDaemonSecretAccess(auditFile, detail) {
+	try {
+		appendFileSync(
+			auditFile,
+			`${new Date().toISOString()} pid=${process.pid} source=${detail?.source ?? "unknown"} secrets=[${(detail?.values ?? []).join(",")}] reason=daemon\n`,
+			{ mode: 0o600 }
+		);
+	} catch {
+		// The audit trail must never break the thing it audits.
+	}
+}
+
 export function loadDaemonSecrets(options = {}) {
 	const env = options.env || process.env;
 	const vaultFile = options.vaultFile || defaultVaultPath(options.stateDir);
@@ -101,5 +136,8 @@ export function loadDaemonSecrets(options = {}) {
 		vaultFile,
 		passphrase: typeof passphrase === "string" && passphrase !== "" ? passphrase : undefined
 	});
+	if (resolved.source === "vault") {
+		recordDaemonSecretAccess(options.auditFile || defaultAuditPath(options.stateDir), { source: "daemon:vault", values: ["NUNCIA_ADMIN_TOKEN"] });
+	}
 	return { ...resolved, vaultFile, passphrase: typeof passphrase === "string" ? passphrase : undefined };
 }

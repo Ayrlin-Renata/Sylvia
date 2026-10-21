@@ -1413,6 +1413,27 @@ EOF
     fi
   fi
 
+  # --- approval push hook (DESIGN §20.12.3) ----------------------------------
+  # The plugin's approveCommand hook fires when an operator asks for authority.
+  # This script forwards the request to the daemon, which logs it, raises a
+  # Termux notification (when Termux:API is installed) and puts it in the
+  # panel's queue. The decision itself still goes to the plugin's admin
+  # endpoint — the hook only announces.
+  if [ -f "$SCRIPT_DIR/assets/a2a-approval-hook.sh" ]; then
+    cp "$SCRIPT_DIR/assets/a2a-approval-hook.sh" "$SYLVIA_HOME/a2a-approval-hook.sh"
+  elif [ -f "$SYLVIA_HOME/repo/assets/a2a-approval-hook.sh" ]; then
+    cp "$SYLVIA_HOME/repo/assets/a2a-approval-hook.sh" "$SYLVIA_HOME/a2a-approval-hook.sh"
+  else
+    note "approval hook source not found — a2a-approval-hook.sh not written"
+  fi
+  if [ -f "$SYLVIA_HOME/a2a-approval-hook.sh" ]; then
+    chmod 700 "$SYLVIA_HOME/a2a-approval-hook.sh"
+    ok "wrote $SYLVIA_HOME/a2a-approval-hook.sh"
+  fi
+
+  chmod 700 "$SYLVIA_HOME/a2a-approval-hook.sh"
+  ok "wrote $SYLVIA_HOME/a2a-approval-hook.sh"
+
   # --- start-sylvia.sh -------------------------------------------------------
   local dsh_bin="${PREFIX:-/data/data/com.termux/files/usr}/lib/node_modules/@deepseek-ai/dsh/lib/bin.js"
   cat > "$SYLVIA_HOME/start-sylvia.sh" <<EOF

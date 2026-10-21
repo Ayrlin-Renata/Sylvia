@@ -190,6 +190,14 @@ async function refreshHealth() {
 async function refreshA2A() {
 	let s;
 	try {
+		// The daemon's pushed security events (the bridge's forward path)
+		// come alongside the plugin's own status payload.
+		try {
+			const ev = await jget("/api/a2a/events");
+			window.__a2aEvents = Array.isArray(ev.events) ? ev.events : [];
+			const ap = await jget("/api/a2a/approvals");
+			window.__a2aApprovals = Array.isArray(ap.pending) ? ap.pending : [];
+		} catch { /* the daemon may not be running */ }
 		s = await jget("/api/a2a/status");
 	} catch (e) {
 		$("#a2a-kv").innerHTML = kv([["Status", badge("bad", "unavailable")], ["Error", esc(e.message)]]);
@@ -225,8 +233,27 @@ async function refreshA2A() {
 			ops.map((o) => `<tr><td class="mono">${esc(o.handle ?? "?")}</td><td>${esc(o.level ?? "?")}</td>` +
 				`<td>${esc(o.scope ?? "—")}</td><td>${esc(o.state ?? "?")}</td><td>${when(o.expiresAt)}</td></tr>`).join("") +
 			`</table>`;
-	// Security events: what the authority layer refused, newest first.
-	const events = (s.authority?.securityEvents ?? []).slice().reverse().slice(0, 8);
+	// The daemon's pushed events (the bridge's forward path).
+	window.__a2aEvents = window.__a2aEvents ?? [];
+	// Security events: what the authority layer refused, newest first. The
+	// daemon's pushed events (from the bridge) are merged in — the plugin's
+	// own ring buffer and the daemon's list see the same refusals from two
+	// sides, and the newest timestamp wins.
+	// Pushed approval requests (the instant path) next to the plugin's own
+	// broker queue (the durable one). Decisions always go to the plugin.
+	const pushedApprovals = (window.__a2aApprovals ?? []).filter((r) => (r.expiresAt ?? 0) > Date.now());
+	if (pushedApprovals.length > 0) {
+		const box = $("#a2a-requests");
+		const block = `<div class="empty">pushed (instant)</div><table><tr><th>Request</th><th>Reason</th><th>Expires</th></tr>` +
+			pushedApprovals.map((r) => `<tr><td class="mono">${esc(r.id ?? "?")}</td>` +
+				`<td>${esc(r.reason || "—")}</td><td>${when(r.expiresAt)}</td></tr>`).join("") + `</table>`;
+		box.innerHTML = block + box.innerHTML;
+	}
+	const pushed = (window.__a2aEvents ?? []);
+	const fromPlugin = (s.authority?.securityEvents ?? []).map((e) => ({ kind: e.kind, reason: e.reason ?? null, at: e.at ?? null }));
+	const events = [...pushed, ...fromPlugin]
+		.sort((a, b) => String(b.at ?? "").localeCompare(String(a.at ?? "")))
+		.slice(0, 8);
 	$("#a2a-events").innerHTML = events.length === 0
 		? `<div class="empty">no security events</div>`
 		: events.map((e) => `<div class="empty">${esc(e.kind ?? "event")}${e.reason === undefined ? "" : ` — ${esc(e.reason)}`}</div>`).join("");

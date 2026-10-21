@@ -17,7 +17,7 @@ import { createDiscoverer } from "./src/discover.js";
 import { createHarnessControl } from "./src/harness.js";
 import { createTransport } from "./src/transport.js";
 import { createA2AProxy } from "./src/a2aproxy.js";
-import { loadDaemonSecrets } from "./src/secrets.js";
+import { defaultAuditPath, loadDaemonSecrets } from "./src/secrets.js";
 import path from "node:path";
 
 const log = makeLog();
@@ -89,6 +89,8 @@ export async function main(env = process.env) {
 		stateDir: config.stateDir,
 		envToken: config.a2aAdminToken,
 		vaultFile: config.a2aVaultFile,
+		keyEnv: config.a2aVaultKeyEnv,
+		auditFile: config.a2aVaultAuditFile || defaultAuditPath(config.stateDir),
 		env: process.env
 	});
 	if (daemonSecrets.source === "vault") {

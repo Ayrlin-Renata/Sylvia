@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import http from "node:http";
 import { makeStaticHandler } from "./web.js";
 import { dshUrl } from "./dshurl.js";
@@ -9,6 +10,41 @@ import { dshUrl } from "./dshurl.js";
 // ---------------------------------------------------------------------------
 
 const API_PREFIX = "/api";
+
+/**
+ * Write a line to the daemon's stderr log. The API module has no logger
+ * dependency of its own — stderr is the daemon's one log sink.
+ * @param {string} message
+ */
+function log(message) {
+	process.stderr.write(`[sylvia-daemon] ${message}\n`);
+}
+
+/**
+ * Raise an Android notification through Termux:API, if it is installed.
+ *
+ * Best-effort by design: the AVD has no Termux:API app, so this is a no-op
+ * there, and a missing app must never break the event path — the log line
+ * and the panel's event list are the durable record.
+ *
+ * @param {string} title
+ * @param {string} [body]
+ */
+function notifyTermux(title, body = "") {
+	const token = process.env.TERMUX_API_TOKEN;
+	if (!token) return false;
+	try {
+		const child = spawn("curl", ["-s", "-X", "POST", "-d", `title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`, "http://127.0.0.1:8787/notification"], {
+			env: { ...process.env, TERMUX_API_TOKEN: token },
+			stdio: "ignore"
+		});
+		child.unref?.();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 
 function send(res, code, obj) {
 	const body = JSON.stringify(obj);
@@ -65,6 +101,10 @@ export function createApi({ config, netgate, getNetstate, getMeta, registry, mod
 	// the panel: the A2A card then says "not configured" instead of the whole
 	// panel erroring.
 	const a2aProxy = a2a ?? { handle: async () => ({ code: 503, body: { error: "A2A proxy unavailable in this build" } }) };
+	// Recent authority security events pushed by the bridge (newest first).
+	const a2aEvents = [];
+	// Approval requests pushed by the plugin's approveCommand hook.
+	const a2aApprovals = new Map();
 	return async (req, res) => {
 		const url = new URL(req.url, "http://127.0.0.1");
 		const p = url.pathname;
@@ -246,6 +286,62 @@ export function createApi({ config, netgate, getNetstate, getMeta, registry, mod
 			// The panel's route to the nuncia plugin's admin surface. The
 			// daemon proxies with the admin token; the plugin's loopback-only
 			// guard is never loosened (the daemon IS a loopback client).
+			// A security event pushed by the bridge: nuncia emits
+			// `nuncia/security-event`, the bridge forwards it here (cordis
+			// emits bubble child→root, so only a root-level listener sees a
+			// sibling plugin's event). The daemon owns the notification path.
+			if (req.method === "POST" && p === "/api/a2a/event") {
+				const event = await readJsonBody(req);
+				if (!event || typeof event !== "object") {
+					return send(res, 400, { error: "invalid event body" });
+				}
+				const stored = {
+					kind: String(event.kind ?? "authority-event"),
+					reason: event.reason === undefined ? null : String(event.reason),
+					at: typeof event.at === "string" ? event.at : new Date().toISOString()
+				};
+				a2aEvents.unshift(stored);
+				if (a2aEvents.length > 50) a2aEvents.length = 50;
+				log(`a2a: security event ${stored.kind}${stored.reason === null ? "" : ` (${stored.reason})`}`);
+				notifyTermux(`A2A ${stored.kind}${stored.reason === null ? "" : `: ${stored.reason}`}`);
+				return send(res, 202, { ok: true, received: stored.kind });
+			}
+			// An approval request pushed by the plugin's approveCommand hook
+			// (the instant path). The panel's queue is the durable surface;
+			// this is the "tell the human now" path.
+			if (req.method === "POST" && p === "/api/a2a/approval") {
+				const body = await readJsonBody(req);
+				const id = typeof body?.id === "string" ? body.id : "";
+				if (id === "") {
+					return send(res, 400, { error: "approval push needs an id" });
+				}
+				const request = {
+					id,
+					reason: typeof body.reason === "string" ? body.reason : "",
+					target: typeof body.target === "string" ? body.target : null,
+					level: typeof body.level === "string" ? body.level : null,
+					scope: typeof body.scope === "string" ? body.scope : null,
+					createdAt: Date.now(),
+					expiresAt: Date.now() + (typeof body.ttlMs === "number" ? body.ttlMs : 120000)
+				};
+				a2aApprovals.set(id, request);
+				log(`a2a: approval requested ${id}${request.reason === "" ? "" : ` — ${request.reason}`}`);
+				notifyTermux(`A2A approval needed`, request.reason);
+				return send(res, 202, { ok: true, id });
+			}
+			if (req.method === "GET" && p === "/api/a2a/events") {
+				return send(res, 200, { ok: true, events: a2aEvents });
+			}
+			// The pushed approval queue. The plugin's own broker remains the
+			// authority on decisions — this list only says "a human is needed";
+			// the panel decides through the plugin's /requests/decide route.
+			if (req.method === "GET" && p === "/api/a2a/approvals") {
+				const now = Date.now();
+				const pending = [...a2aApprovals.values()]
+					.filter((request) => request.expiresAt > now)
+					.sort((a, b) => a.createdAt - b.createdAt);
+				return send(res, 200, { ok: true, pending });
+			}
 			if (p.startsWith("/api/a2a/")) {
 				const route = p.slice("/api/a2a/".length);
 				let body;

@@ -1,0 +1,22 @@
+# NOTE: this file ignores itself under the old `.*` rule, which is why the
+# secret rules below were never shared. The pattern is now anchored so the
+# ignore file itself can be tracked.
+.git/
+.DS_Store
+Thumbs.db
+
+# Local checkouts and build scratch.
+reference/
+owned_forks/
+node_modules/
+mitm_mcp_traffic.db
+
+# --- secrets (DESIGN §20.12.3) --------------------------------------------
+# The node's private signing key: it CAN mint authority envelopes, so it must
+# never reach a commit. The public key is safe and lives in the config.
+nuncia-node.key
+*.key
+# The encrypted vault and the passphrase that opens it.
+secrets.enc
+.secret-key
+secrets-access.log

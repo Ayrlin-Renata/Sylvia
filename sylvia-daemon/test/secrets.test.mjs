@@ -11,11 +11,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createCipheriv, randomBytes, scryptSync } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { decryptVault, defaultVaultPath, loadDaemonSecrets, resolveAdminToken } from "../src/secrets.js";
+import { decryptVault, defaultAuditPath, defaultVaultPath, loadDaemonSecrets, resolveAdminToken } from "../src/secrets.js";
 
 const PASSPHRASE = "daemon vault passphrase";
 
@@ -93,4 +93,62 @@ test("loadDaemonSecrets wires the whole chain", () => {
 
 test("the default vault path lives in the state dir", () => {
 	assert.equal(defaultVaultPath("/state"), join("/state", "secrets.enc"));
+});
+
+test("the default audit path is a SIBLING of the vault, not a subdirectory", () => {
+	// The earlier derivation (strip ".enc", append "/secrets-access.log")
+	// produced "<stateDir>/secrets/secrets-access.log" — a directory that
+	// never exists, so every append failed silently and the audit trail
+	// recorded nothing. The two paths must share a parent.
+	assert.equal(defaultAuditPath("/state"), join("/state", "secrets-access.log"));
+	assert.equal(defaultVaultPath("/state").split(/[\\/]/).slice(0, -1).join("/"), defaultAuditPath("/state").split(/[\\/]/).slice(0, -1).join("/"));
+});
+
+test("a vault read actually writes the audit line", () => {
+	const { dir, file } = scratch();
+	writeVault(file, { NUNCIA_ADMIN_TOKEN: "from-vault" }, PASSPHRASE);
+	const audit = join(dir, "secrets-access.log");
+	const loaded = loadDaemonSecrets({
+		stateDir: dir,
+		envToken: "",
+		vaultFile: file,
+		auditFile: audit,
+		env: { SYLVIA_SECRET_KEY: PASSPHRASE }
+	});
+	assert.equal(loaded.token, "from-vault");
+	assert.ok(existsSync(audit), "the audit file was never created");
+	const line = readFileSync(audit, "utf8");
+	assert.match(line, /source=daemon:vault/);
+	assert.match(line, /NUNCIA_ADMIN_TOKEN/);
+	assert.match(line, /reason=daemon/);
+});
+
+test("the default audit path is used when no explicit one is given", () => {
+	const { dir, file } = scratch();
+	writeVault(file, { NUNCIA_ADMIN_TOKEN: "from-vault" }, PASSPHRASE);
+	loadDaemonSecrets({ stateDir: dir, envToken: "", vaultFile: file, env: { SYLVIA_SECRET_KEY: PASSPHRASE } });
+	const audit = join(dir, "secrets-access.log");
+	assert.ok(existsSync(audit), "the default audit path must be writable");
+	assert.match(readFileSync(audit, "utf8"), /source=daemon:vault/);
+});
+
+test("the key env var is a NAME, so a custom name works", () => {
+	const { file } = scratch();
+	writeVault(file, { NUNCIA_ADMIN_TOKEN: "from-vault" }, PASSPHRASE);
+	const loaded = loadDaemonSecrets({
+		stateDir: undefined,
+		envToken: "",
+		vaultFile: file,
+		keyEnv: "MY_OWN_KEY_NAME",
+		env: { MY_OWN_KEY_NAME: PASSPHRASE }
+	});
+	assert.equal(loaded.token, "from-vault");
+});
+
+test("a missing key env var leaves the daemon without a token", () => {
+	const { file } = scratch();
+	writeVault(file, { NUNCIA_ADMIN_TOKEN: "from-vault" }, PASSPHRASE);
+	const loaded = loadDaemonSecrets({ stateDir: undefined, envToken: "", vaultFile: file, keyEnv: "NOT_SET", env: {} });
+	assert.equal(loaded.token, "");
+	assert.equal(loaded.source, "none");
 });

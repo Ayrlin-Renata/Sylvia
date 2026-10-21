@@ -145,6 +145,12 @@ export function loadConfig(env = process.env) {
 		// environment; the admin token comes from the vault. The environment
 		// still wins, so an explicit override keeps working.
 		a2aVaultFile: env.SYLVIA_A2A_VAULT_FILE || path.join(stateDir, "secrets.enc"),
-		a2aVaultKeyEnv: env.SYLVIA_SECRET_KEY || "SYLVIA_SECRET_KEY"
+		// The NAME of the variable holding the passphrase — never the value.
+		// An earlier version read env.SYLVIA_SECRET_KEY here, which put the
+		// secret itself in the config object (and would have logged it).
+		a2aVaultKeyEnv: env.SYLVIA_A2A_VAULT_KEY_ENV || "SYLVIA_SECRET_KEY",
+		// Where the daemon records vault reads. It defaults to a sibling of
+		// the vault; point it at the plugin's own log to keep ONE tripwire.
+		a2aVaultAuditFile: env.SYLVIA_A2A_VAULT_AUDIT_FILE || path.join(stateDir, "secrets-access.log")
 	};
 }

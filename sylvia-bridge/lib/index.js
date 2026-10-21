@@ -16,6 +16,7 @@ import z from '@deepseek-ai/schemastery';
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm';
 import { createBridgeCore, DEFAULT_CONFIG } from './core.js';
 import { sampleNetwork } from './sample.js';
+import { forwardSecurityEvent, normalizeSecurityEvent } from './security-event.js';
 
 export const name = 'sylvia-bridge';
 
@@ -78,6 +79,28 @@ export function apply(ctx, config) {
     },
     log: (...args) => ctx.logger?.info?.(...args),
   });
+
+  // nuncia republishes its authority security events on the host bus as
+  // `nuncia/security-event`. Cordis emits bubble CHILD → ROOT, so a sibling
+  // plugin (nuncia) never sees another plugin's emission; only a listener on
+  // the root context does. That is why this subscription is made on the root
+  // rather than on this plugin's own context: the event originates inside
+  // nuncia's fiber and can only be observed from above it.
+  //
+  // The forwarded event is what lets the daemon raise a notification for a
+  // refused authority claim — the human path for "a peer tried to mint
+  // something it was not granted".
+  const root = ctx.root ?? ctx
+  const onSecurityEvent = (event) => {
+    try {
+      const payload = normalizeSecurityEvent(event)
+      ctx.logger?.warn?.(`[sylvia-bridge] authority security event: ${payload.kind}${payload.reason === null ? '' : ` (${payload.reason})`}`)
+      void forwardSecurityEvent(cfg, payload)
+    } catch (error) {
+      ctx.logger?.warn?.('[sylvia-bridge] security-event forward failed:', error?.message ?? error)
+    }
+  }
+  root.on?.('nuncia/security-event', onSecurityEvent)
 
   ctx.on('agent/created', ({ agent }) => core.track(agent));
   ctx.on('agent/disposed', ({ agent }) => core.untrack(agent));
@@ -148,4 +171,10 @@ export function apply(ctx, config) {
 
   // Expose for debugging / future control-panel probes.
   ctx.provide?.('sylviaBridge', core.getState);
+
+  // Release the root-level subscription when the plugin unloads.
+  ctx.effect(() => () => {
+    try { root.off?.('nuncia/security-event', onSecurityEvent) } catch { /* already gone */ }
+  }, 'sylvia-bridge:security-events')
 }
+
