@@ -2329,3 +2329,71 @@ turn. Acceptance is `tests/test-p4-chatelaine.mjs` (28 checks), which uses a
 strict `agents.resume` (a session that was never created cannot be resumed) and
 a `workspaceRegistry` that refuses to attach a session whose header cwd is
 missing — the two permissive fakes that hid this class of bug.
+## 20.15 P4.2 prep — operator continuity, and a brief that stops the digging (2026-10-21)
+
+Two complaints from the same live session, both rooted in the executor layer and
+both fixed here.
+
+### 20.15.1 One exchange, one operator
+
+The rule was already decided (§20.14: "continued A2A from the same source goes to
+the same operator by default") and the executor honoured it — for a follow-up that
+carried the **task** id. What was missing was the ordinary case: a peer that keeps
+its `contextId` but has no way to know our task id, i.e. every retry.
+
+The executor already had the re-keying path (a fresh task id with a known
+`contextId` + matching `authority.origin` adopts the existing record, keeps its
+session, re-keys the OperatorBook and leaves the old task id as an alias, because
+the session id embedded in the v4 header is immutable). It never ran, because
+`a2a_send` handed `recordOf` the **exec** object instead of the agent, so the
+caller's `contextId` was never attached (`recordOf` reads `agent.id` /
+`agent.session.header.id`; exec has neither, and returned `undefined` before its
+debug line).
+
+Evidence, desktop node, before the fix: nine `a2a-op-peer-*` session directories
+created between 16:03 and 16:20, one per retry. After: two `SendMessage` calls
+sharing `contextId 94ac9b87…` produced tasks `3c920279…` (4 s) and `3c27a71b…`
+(1 s) and exactly **one** session directory, `a2a-op-peer-3c920279…`.
+
+`a2a_send` also gained an optional `contextId` parameter, for the caller that has
+no task context of its own: the chatelaine. A chatelaine retrying the same request
+can now say "same exchange" instead of opening a new remote operator; inside a
+task the parameter stays unnecessary because the task's own exchange is used.
+
+### 20.15.2 The brief has to supply what the operator needs
+
+A user-supplied session dump (45 tool calls, 26 assistant messages, **zero**
+`a2a_send` calls, turn abandoned) shows exactly what the old brief invited: the
+operator read the house rules, then `.nuncia/identity.json`, `chatelaine.json`,
+`operators.json`, `transport.json`, `netgate.json`, the daemon logs, listed
+`~/.sylvia` and the home directory, grepped `~/.dsh` for `peerUrls`, read the
+nuncia README, `cordis.patch.yml`, `outbound.js` and `DESIGN.md` — because the
+brief said neither who it could talk to, nor that it should not look.
+
+The task text was vague ("handshake over the naming rename"), but vagueness is
+normal and the brief is the part we control. It now:
+
+* names the node it actually runs on (`authority.nodeName`, not `hostname()` —
+  the same defect the chatelaine brief had; the live operator brief had said node
+  `DESKTOP-J28T4KN` while the node is `sylviana`);
+* lists the paired peers it can reach **by name**, marking legacy keys, and says
+  plainly when there are none that an outbound message has no destination;
+* names the four tools that do the job (`a2a_send`, `report_to_chatelaine`,
+  `request_user_intent`, `operator_authority`) and says that anything else the
+  request needs should be named to the chatelaine rather than hunted for;
+* says an A2A task is a request, not a project — do what was asked, then stop;
+* forbids the digging explicitly: if the request is ambiguous or the target is
+  unknown, ask the chatelaine **one** focused question and end the turn. "The
+  configuration is the chatelaine's business, not yours."
+
+This is a prompt-side fix to a prompt-side failure, and the test asserts the
+lines (`tests/test-p2.mjs`, built by calling the exported `operatorBrief`
+directly, because the P2 suite runs with authority disabled and therefore has no
+peers or node name of its own).
+
+Suite after the work: `npm test` → fail 0, `ALL SMOKE / AUTHORITY / TOOLS / P2 /
+P3-AUTH / P4 CHATELAINE PASS`. Deployed identically to both nodes
+(`lib/index.js` md5 `faa8fc7bd22ad1e8cac8003911b98633`), each reloaded by
+appending a marker comment to `cordis.patch.yml`; desktop reports
+`name=sylviana`, peer `vienzie`, AVD reports `name=vienzie` with a fresh
+`since`. Fork commit `3ca760f`.
