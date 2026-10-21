@@ -21,7 +21,7 @@
 			<h2>Harness</h2>
 			<dl class="kv" id="dsh-kv"><dd class="muted">loading…</dd></dl>
 			<div class="toolbar" style="margin:14px 0 0">
-				<a id="btn-dsh" class="btn" href="http://127.0.0.1:3080" target="_blank" rel="noopener"
+				<a id="btn-dsh" class="btn" href="" target="_blank" rel="noopener"
 				   title="Open the DSH harness web UI with the current token (acceptance live-verified every refresh)">Open DSH ↗</a>
 				<button id="btn-restart" title="Restart the harness web server and mint a fresh token">Restart harness</button>
 			</div>
@@ -373,8 +373,28 @@ async function refreshDsh() {
 	}
 }
 
-$("#btn-restart").onclick = async () => {
+// Android Chrome occasionally opened this link WITHOUT the query string (the
+// same URL opened in a new tab carried the token and worked). A bare / answers
+// 401, so the fetch would "fail" for reasons the user cannot see. Never let a
+// tokenless URL leave the page: if the href has no token — first paint, a
+// failed refresh, or the platform dropping the query — fetch a fresh one and
+// navigate explicitly, falling back to the same tab when a popup is blocked.
+$("#btn-dsh").addEventListener("click", async (event) => {
+	const href = $("#btn-dsh").href || "";
+	if (/[?&]token=/.test(href)) return; // tokened: let the normal navigation happen
+	event.preventDefault();
 	try {
+		const d = await jget("/api/dsh-url");
+		if (!d.url || !/[?&]token=/.test(d.url)) throw new Error("the harness has not minted a token yet");
+		$("#btn-dsh").href = d.url;
+		const opened = window.open(d.url, "_blank", "noopener");
+		if (!opened) window.location.assign(d.url); // popup blocked: same tab is still correct
+	} catch (e) {
+		toast(e.message, true);
+	}
+});
+
+$("#btn-restart").onclick = async () => {	try {
 		const cur = await jget("/api/dsh-url").catch(() => ({}));
 		preRestartToken = cur.token ?? null;
 		$("#btn-dsh").classList.add("restarting"); // red, but NEVER disabled

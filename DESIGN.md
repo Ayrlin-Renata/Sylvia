@@ -2019,3 +2019,130 @@ AVD pins exactly that, so the pair verifies. The stray root key is gitignored
 **State now:** P3.0–P3.3 done and verified live on both nodes. P3.4 remains:
 the registry last-seen join, the README's A2A section, and the arm64
 physical-device acceptance.
+
+## 20.13 P3.4 review round — the chatelaine channel, the materialised tag, and an audit (2026-10-20)
+
+Six questions from the operator produced one new capability, three defects, and
+an audit of §20 against the shipped build. All of it is implemented and live.
+
+### 20.13.1 `message_peer_chatelaine` — the missing relationship
+
+The plugin could already speak to its OWN chatelaine (`report_to_chatelaine`),
+to a local operator (`reply_to_operator`), and to a peer node as a task
+(`a2a_send`) — but there was no way for one node's chatelaine to reach a
+PAIRED node's chatelaine. `a2a_send` was the wrong instrument: it opens an
+operator task on the far side, i.e. it asks the peer's *worker* to do
+something. Two humans' representatives talking is not an operator task.
+
+The channel is a *delivery*, not an execution:
+
+* sender — `message_peer_chatelaine({peer, message})`, chatelaine-only
+  (ownership check against `chatelaine.peekId()`; anyone else is told to
+  report the intent to the chatelaine instead). It rides `a2a_send` with
+  `metadata.toChatelaine = true` beside the authority envelope.
+* receiver — the executor branches BEFORE operator creation. With a verified
+  `intent`/`override` grant it publishes an acknowledgement task and calls
+  `chatelaine.report(text, {wake:true})`; no operator session is created and
+  nothing executes on the receiving node. Without such a grant it refuses
+  outright: *"this node accepts chatelaine-to-chatelaine messages only with a
+  verified intent grant carrying metadata.toChatelaine — no such grant
+  arrived, so the message was not delivered"*.
+
+The grant requirement is not ceremony. The bearer proves a paired *client*;
+injecting text into the human's representative is precisely the
+social-engineering surface the authority layer exists to close, so the peer
+must have asked its own human for the privilege first.
+
+Live: desk minted `intent`/`chatelaine-channel` for avd and delivered
+`Greetings from desk…`; it landed in `a2a-chatelaine-93281439…` as
+`agent/inbox/spliced` + a `plugin:dsh-nuncia` message. The same message with
+no envelope failed with the text above.
+
+### 20.13.2 The chatelaine session now actually exists
+
+The operator suspected it was never created. Correct, for a specific reason.
+
+P3.1 renamed the stored chatelaine id from `session-<uuid>` to
+`a2a-chatelaine-<uuid>` so the metered gate could recognise it by prefix. But
+a v4 session's id lives INSIDE its own header — `dsh-session`
+`validateSessionHeader` throws *"session header id … does not match session
+id …"* — so a session cannot be renamed. The migration rewrote the pointer and
+left the old directory behind: `/status` advertised a tagged id that no
+session answered to, the prefix matched, and the gate's exemption applied to
+nothing.
+
+`ensureTagged()` closes it: it resolves the stored tagged id, probes whether
+a session exists, and if not CREATES one under that exact id. `resolveId()`
+calls it before returning, and `report()` resolves the tagged id FIRST and
+only then tries the historical ids as fallbacks — so a report lands in the
+tagged thread rather than silently in the untagged one. The untagged thread is
+never deleted; it is the fallback and the history.
+
+Live: `a2a-chatelaine-93281439…` now exists on the AVD and
+`a2a-chatelaine-04fb2136…` on the PC, both created by this path.
+
+### 20.13.3 `glob`/`grep`/`search` failed: a platform-gated npm package, again
+
+`SEARCH_FAILED … ripgrep launch failed` was not a Termux problem and not
+fixable by putting `rg` on `PATH`. `dsh-tool-fs-search.resolveRgPath()`
+imports `@vscode/ripgrep`, which resolves
+`@vscode/ripgrep-${process.platform}-${arch}/bin/rg`. Termux reports
+`platform === 'android'`, and `@vscode/ripgrep@1.18.0` publishes **no android
+package** — the same class of gap as `node-addon-system`'s missing flock
+binding (§20.9). The resolution is inside a stock DSH package, so the fix
+supplies the missing platform package rather than patching code.
+
+`install.sh` now installs `ripgrep` and writes
+`<dsh>/node_modules/@vscode/ripgrep-android-<arch>/` containing a
+`package.json` and a `bin/rg` shell shim that `exec`s the Termux binary, then
+PROVES it from the CLI's own root: the import must resolve and
+`rg --version` must exit 0. Verified on the AVD (resolution →
+`…/ripgrep-android-x64/bin/rg`; `rg --files --glob *.md` returned the file).
+
+### 20.13.4 The audit: §20 against the build
+
+Everything specified through P3.3 is implemented and live-verified. What this
+round changed or found:
+
+| item | state |
+| --- | --- |
+| P2.4 authority rejection → chatelaine notice | **closed now.** `recordSecurityEvent` fires `securityHooks.chatelaine` with peer, reason, task and the "treat it as an attempt to act in your name" instruction. Live on the AVD (forged envelope → one notice in the chatelaine thread). |
+| P2.4 `approveCommand` with `NUNCIA_EVENT` | **closed now.** `fireApproveCommand()` is shared by the approval announcement (`approval-requested`) and the security hook (`authority-rejected`); one script does both jobs. |
+| P2.2 stable chatelaine session | **corrected** (§20.13.2): the id was tagged but the session did not exist. |
+| P3.4 registry last-seen join | open. |
+| P3.4 README A2A section | open. |
+| P3.4 arm64 physical-device acceptance | open. |
+| chatelaine → peer chatelaine | **new** (§20.13.1), unspecified before this round. |
+
+Two findings outside §20 that affect it:
+
+* **Termux:Boot is not installed on the AVD** (`pm list packages` has no
+  `com.termux.boot`), so `~/.termux/boot/10-sylvia.sh` never runs and nothing
+  survives a device restart — harness, daemon and modules all stay down. The
+  installer seeds the script and warns; the app must be installed from F-Droid
+  and opened once.
+* **the `mdns` module can never run on Termux.** Android has no
+  `avahi-daemon`/`mdnsd` CLI (discovery is the framework's NSD) and Termux
+  ships neither package, yet the module was `behavior: always`. The daemon
+  restarted it forever (death streak 7, exponential backoff) — an "always on"
+  service that is never on. It is now `manual`, and `on.sh` explains why and
+  exits 2. `9router` is `manual` by design, so a reboot leaves the model route
+  down until it is started.
+
+### 20.13.5 The dashboard's "Open DSH" link
+
+`GET /api/dsh-url` was already correct — the AVD returned a tokened URL with
+`verify: accepted`. The failure is the client: the anchor's static `href` was a
+tokenless `http://127.0.0.1:3080`, so any navigation before (or without) a
+successful refresh landed on a 401 page with the query string gone. The static
+href is now empty and a click handler refuses to navigate without a token: it
+fetches `/api/dsh-url` first, refuses if the harness has not minted one, and
+falls back to a same-tab assignment if the popup is blocked.
+
+### 20.13.6 Tests
+
+plugin 155/155 + six harnesses (SMOKE, AUTHORITY, TOOLS, AUTH, P2, P3-AUTH);
+daemon 153/153; bridge 39/39. `test-tools.mjs` now asserts six tools and that
+a non-chatelaine caller is refused `message_peer_chatelaine`;
+`test-chatelaine-resilience.test.mjs` asserts a migrated-but-absent id is
+created UNDER THAT ID rather than silently using the untagged thread.

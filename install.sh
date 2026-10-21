@@ -155,6 +155,11 @@ module_base_packages() {
   have ip    || missing+=(iproute2)        # 'ip' binary — daemon Tier-0 network detection
   have python || missing+=(python)         # uv/uvx interpreter (mitmproxy CLI + mitmproxy-mcp)
   have unzip || missing+=(unzip)           # lift libshizuku.so out of the Shizuku APK (transport ladder tier-3)
+  # ripgrep is the search backend behind DSH's glob/grep/search tools. DSH does
+  # NOT use a PATH `rg`: it resolves `@vscode/ripgrep`, whose platform packages
+  # stop at linux/win32/darwin — no android build exists, so every search
+  # failed with SEARCH_FAILED. The distro binary + the shim below fix that.
+  have rg || missing+=(ripgrep)
   # termux-api = the termux-* CLI stubs (termux-wake-lock etc.). The companion
   # Termux:API *app* (F-Droid) is a separate manual install; without it the
   # stubs are present but no-ops, which is harmless.
@@ -768,6 +773,92 @@ SWEEP_EOF
       || die "npm install of ambient package(s) failed:$spec"
   done
   die "ambient dependency sweep did not converge after 6 rounds — last: $names"
+}
+
+# =============================================================================
+#  MODULE 4.5 — ripgrep for Android (the glob/grep/search backend)
+# =============================================================================
+# DSH's search tools do NOT use a PATH `rg`. `dsh-tool-fs-search` resolves
+# `@vscode/ripgrep`, whose platform packages are linux/win32/darwin only —
+# there is no android build, so on Termux every glob/grep/search failed with
+# `SearchError: SEARCH_FAILED / ripgrep launch failed`.
+#
+# The fix is not "put rg on PATH" (nothing looks there). It is to SUPPLY the
+# missing platform package: a tiny `@vscode/ripgrep-android-x64` whose bin/rg
+# execs the distro binary. That is exactly the shape the module expects, it
+# needs no edit to any stock DSH file, and it survives npm operations because
+# nothing owns that name.
+module_ripgrep_shim() {
+  CURRENT_MODULE="ripgrep"
+  # `PREFIX` may be unset under `set -u` (run-as does not export it), so use the
+  # installer's own convention rather than the bare variable.
+  local prefix="${PREFIX:-/data/data/com.termux/files/usr}"
+  command -v rg >/dev/null 2>&1 || die "rg missing (base packages should provide ripgrep)"
+
+  # The tree that carries the CLI. `dsh` may be top-level or profile-nested.
+  local gmp="${PREFIX:-/data/data/com.termux/files/usr}/lib/node_modules"
+  local rgpkg=""
+  local cand
+  for cand in \
+    "$gmp/@deepseek-ai/dsh/node_modules/@vscode/ripgrep" \
+    "$gmp/@deepseek-ai/dsh-*/node_modules/@vscode/ripgrep"; do
+    [ -d "$cand" ] && { rgpkg="$cand"; break; }
+  done
+  if [ -z "$rgpkg" ]; then
+    note "@vscode/ripgrep not found in the DSH tree — skipping the ripgrep shim"
+    return 0
+  fi
+
+  local scope_dir; scope_dir="$(dirname "$rgpkg")"
+  local arch
+  case "$(uname -m)" in
+    x86_64) arch="android-x64" ;;
+    aarch64|arm64) arch="android-arm64" ;;
+    armv7l|arm) arch="android-arm" ;;
+    *) note "unsupported arch $(uname -m) for the ripgrep shim — skipping"; return 0 ;;
+  esac
+  # @vscode/ripgrep builds the package name from process.platform/process.arch,
+  # and Termux reports platform 'android' — so the shim MUST be named android-*.
+  local shim="$scope_dir/ripgrep-$arch"
+  local rgbin; rgbin="$(command -v rg)"
+
+  if [ -x "$shim/bin/rg" ] && grep -q "$rgbin" "$shim/bin/rg" 2>/dev/null; then
+    skip "ripgrep shim present ($shim)"
+  else
+    ensure_dir "$shim/bin"
+    cat > "$shim/package.json" <<JSON
+{
+  "name": "@vscode/ripgrep-$arch",
+  "version": "1.18.0",
+  "description": "Android shim: @vscode/ripgrep publishes no android build, so this package points at the Termux binary.",
+  "bin": { "rg": "bin/rg" }
+}
+JSON
+    cat > "$shim/bin/rg" <<SH
+#!$prefix/bin/sh
+# Termux publishes no @vscode/ripgrep-$arch package; exec the distro binary so
+# DSH's glob/grep/search tools work on Android.
+exec $rgbin "\$@"
+SH
+    chmod 755 "$shim/bin/rg"
+    ok "ripgrep shim written ($shim -> $rgbin)"
+  fi
+
+  # Prove it: resolution is what the tool does, and running it is what the
+  # failure message claimed was broken. The bare import must be resolved from
+  # the CLI's own package root (that is the module graph the tool uses).
+  local dsh_root; dsh_root="$(dirname "$(dirname "$(dirname "$rgpkg")")")"
+  if ( cd "$dsh_root" && node --input-type=module -e '
+      import("@vscode/ripgrep").then(async (m) => {
+        const { spawnSync } = await import("node:child_process")
+        const r = spawnSync(m.rgPath, ["--version"], { encoding: "utf8" })
+        process.exit(r.status === 0 ? 0 : 1)
+      }).catch(() => process.exit(1))
+    ' >/dev/null 2>&1 ); then
+    ok "ripgrep resolves and runs (glob/grep/search work)"
+  else
+    warn "ripgrep still does not resolve from the DSH tree — glob/grep/search will fail with SEARCH_FAILED"
+  fi
 }
 
 # =============================================================================
@@ -2236,6 +2327,7 @@ module_dsh_cli
 module_dsh_patch
 module_native_binding
 module_ambient_deps
+module_ripgrep_shim
 module_sylvia_mcp
 module_sylvia_daemon
 module_local_modules

@@ -1,7 +1,7 @@
 {
 	"id": "mdns",
 	"name": "mDNS responder",
-	"behavior": "always",
+	"behavior": "manual",
 	"frontend": null,
 	"settingsSchema": [
 		{ "key": "serviceNames", "type": "string", "label": "Advertised service names (comma-separated)", "default": "" },

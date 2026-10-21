@@ -11,6 +11,18 @@ elif command -v mdnsd >/dev/null 2>&1; then
 	setsid mdnsd </dev/null >/dev/null 2>&1 &
 	echo "mdns: started mdnsd"
 else
-	echo "mdns: no responder found (avahi-daemon or mdnsd)" >&2
-	exit 1
+	# Android has no avahi-daemon/mdnsd CLI: discovery there is the FRAMEWORK's
+	# Network Service Discovery, which no shell process can drive, and Termux's
+	# repositories carry neither package. This module therefore cannot run on
+	# Termux as written — and being classified `always` made the daemon restart
+	# it forever (death streak 7, exponential backoff: an "always on" service
+	# that is never on). It is `manual` for exactly that reason.
+	cat >&2 <<'MSG'
+mdns: no responder available.
+  Android ships neither an avahi-daemon nor an mdnsd CLI — mDNS there is the
+  framework's Network Service Discovery, not a daemon. Starting this module
+  will always fail; it is `manual` so the daemon does not churn on it.
+  If you need mDNS, run your own userspace responder.
+MSG
+	exit 2
 fi
