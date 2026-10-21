@@ -1901,3 +1901,121 @@ verified live on both nodes). Next: **P3.3** — the push path (approvals via
 `approveCommand`, security events via a root-context bridge subscription) and
 **P3.4** (the installer's name-pool seeding is in; the registry last-seen join
 and the README A2A section remain).
+
+---
+
+### 20.12.3 P3.3 executed — the vault, the tripwire, and the netgate exemption (2026-10-20)
+
+Three things closed in this pass, and two of them were defects that only
+showed up when the pieces met.
+
+#### The encrypted secret vault
+
+The pairing secret and the A2A admin token used to live in `sylvia.env` as
+plaintext `export` lines, on the same disk as everything else. They are now
+in ONE AES-256-GCM file (`secrets.enc`) under a scrypt-derived key, and the
+only thing outside the vault is the passphrase (`~/.sylvia/.secret-key`,
+mode 0600, and `SYLVIA_SECRET_KEY` in the env file).
+
+The plugin decrypts at boot (`loadVaultIntoEnvironment`) and **fills only the
+names the environment does not already set** — the environment still wins, so
+a one-off override keeps working and a node with no vault behaves exactly as
+before. A missing vault, a wrong key, a tampered file: all non-fatal. The
+vault is an improvement, not a new way to fail at boot.
+
+**What this does and does not buy.** It stops accidental disclosure — grep,
+a copied config, a profile patch, a chat log. It does **not** stop a local
+agent: DSH runs `danger-full-access`, so a same-uid agent can read the key
+and call the decryptor itself. That residual is the §20.6 one, stated
+honestly: the vault raises the cost of *finding* the key, and makes every
+use of it **visible**.
+
+#### One tripwire, not three
+
+That visibility is the point, so the audit log has to be complete. It was
+not: the plugin wrote `<stateDir>/secrets-access.log`, the daemon wrote
+`<stateDir>/secrets/secrets-access.log` — a **directory that never exists**,
+so every daemon append failed and was swallowed, and the daemon's trail
+recorded *nothing* — and the CLI pointed at the home directory.
+
+All three now default to a **sibling of the vault** (`dirname(vault)/
+secrets-access.log`), so they agree with no configuration at all, and
+`config.secrets.auditFile` can point them elsewhere on purpose. The
+installer reports the path when it writes the vault.
+
+The lesson is the same one as the P2 panel: *a tripwire that silently
+records nothing is worse than no tripwire*, because it is a false assurance.
+
+#### The secrets leave the env file
+
+The vault bought nothing while the plaintext was still sitting next to the
+passphrase. `install.sh` now deletes the `NUNCIA_PAIRING_SECRET` /
+`NUNCIA_ADMIN_TOKEN` exports once the vault is written — the env file keeps
+the passphrase and nothing else.
+
+#### The netgate exemption (§20.5, finally built)
+
+§20.5 promised that A2A work survives a metered network when the operator
+says so. Nothing implemented it: the netgate stopped every managed service
+and the bridge cancelled every session, so a remote operator died the moment
+the phone metered.
+
+The **daemon** now owns that decision:
+
+- `netgate.register(name, pgid, note, {exempt})`; `hold()` skips an exempt
+  service and reports it, and `resume()` never SIGCONTs a service that
+  never stopped.
+- `POST /api/netgate/services` accepts `{exempt}`, and
+  `POST /api/netgate/services/exempt {name, exempt}` flips one service.
+- `SYLVIA_A2A_EXEMPT_FROM_GATE` (default **FALSE** — fail closed) makes
+  always-on modules exempt by default.
+- `GET /api/network` carries `a2aExempt`, so the bridge sees the decision.
+
+The **bridge** honours it: `isExempt(agent)` is true when the operator
+opted in **or** the daemon says so, **and** the session is an A2A one. An
+ordinary session is never exempt — the exemption is per-session, never a
+blanket "ignore the network".
+
+#### The chatelaine resilience fix
+
+A separate defect, found while proving the above: the P3.1 id migration
+renamed the chatelaine session id **without moving the session directory**,
+so the stored id pointed at nothing and `agents.resume()` found no session.
+Every `report_to_chatelaine` on **both** nodes failed with "chatelaine
+session is not reachable" — silently, on every operator, forever.
+
+`resolveAgentFrom()` now tries the candidates in order (the current id, the
+id it replaced, the configured one) and returns the first that resolves. A
+report falls back to the **previous thread** when the current one is gone,
+and only if nothing resolves does it create a fresh session and deliver into
+that. It never throws into the calling turn: a failed report returns
+`{delivered:false, reason}`.
+
+The deeper lesson: **renaming an identifier is not renaming the thing.**
+Anything that survives a restart — a session id, a state file, a key — has to
+be migrated *with* whatever it points at, or the pointer is a lie. The
+tagged id is what the metered gate recognises; the untagged directory is
+where the thread actually lives; the two must agree.
+
+**Live acceptance (2026-10-20), both nodes:**
+
+| step | desk | AVD |
+|---|---|---|
+| vault opens; `authSource: derived` | ✅ | ✅ |
+| tripwire records the read | ✅ `source=vault:file:…` | ✅ `source=vault:env:SYLVIA_SECRET_KEY` |
+| plugin and daemon write the SAME file | ✅ (one `secrets-access.log`) | ✅ |
+| `report_to_chatelaine` lands in the chatelaine thread | ✅ `CHATELAINE RESILIENCE OK` in `session-04fb2136…` | ✅ `AVD CHATELAINE RESILIENCE OK` in `session-93281439…` |
+| node identity / peer pin agree | ✅ desk `7jsvWk5X142WqWk7` ⇄ avd `W0jttouSyxfHmnzx` | ✅ |
+| `/status` reports `a2aExempt` | ✅ | ✅ |
+
+**The key reconciliation.** Three identities existed: the PC plugin was
+actually running with `LKlivB0WOSTdG6p6` (a stray key in the repo root),
+while the profile pointed at `7jsvWk5X142WqWk7` — which is what the AVD had
+pinned as peer `desk`. The live node now reports `7jsvWk5X142WqWk7` and the
+AVD pins exactly that, so the pair verifies. The stray root key is gitignored
+(`.gitignore` now tracks `*.key`, `secrets.enc`, `.secret-key`,
+`secrets-access.log`) and is not used.
+
+**State now:** P3.0–P3.3 done and verified live on both nodes. P3.4 remains:
+the registry last-seen join, the README's A2A section, and the arm64
+physical-device acceptance.

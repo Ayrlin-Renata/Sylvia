@@ -525,6 +525,10 @@ with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those
 | After some packages install, plugins silently deactivate with `Cannot find package '@deepseek-ai/dsh-session'` | The `--legacy-peer-deps` retry npm needs for `dsh-terminal-bash` (its 8 peerDependencies crash arborist's tree builder) **prunes nested peers** the CLI depends on. `install.sh` now repairs the tree (reinstalls the CLI spec, re-prunes stock fork copies) and then *proves* a nested peer resolves, failing loudly if not. Re-run `install.sh`. |
 | Chat/A2A task fails at prompt assembly: `prompt variable "{{model}}" has no value for this assembly` | The preset's persona prefix interpolates `{{model}}`, so an agent created without a bound model cannot start its first turn. Defaults exist (the host's `agentDefaultModel` selection is used automatically); if this appears, pick a model in the UI (Settings → Models) or set `model:`/`provider:` on the plugin config. |
 | A turn dies with `format v4 message requires a producer-owned source kind` | A plugin injected a message with the retired `source.kind: 'plugin'` wrapper. The v4 session format refuses that kind when adopting the event, and the rejected write fails the **whole turn** — so one bad notice looks like a model/turn failure. Use the producer's own kind (`plugin:<package>`, exactly what the format's v3 rewrite produces); `sylvia-bridge` and `dsh-nuncia` are fixed, so if it appears again it is another injector. |
+| An A2A operator reports "chatelaine session is not reachable" and nothing arrives | The chatelaine's stored session id pointed at a session that no longer exists — a renamed id, or a wiped store. `dsh-nuncia` now falls back to the previous thread and, if that is gone too, adopts a fresh session, so the report lands somewhere instead of being lost. Check `~/.sylvia/housekeeping/.nuncia/chatelaine.json` and the session directory beside it. |
+| A remote A2A operator is cancelled the moment the phone goes metered | By design the network gate fails closed: metered data means no work unless you opt in. Set `allowA2AOnMetered: true` on the **bridge** row, or exempt the A2A service from the **daemon**'s gate (the panel's Netgate card has an **Exempt** button per service, and `SYLVIA_A2A_EXEMPT_FROM_GATE=1` exempts the always-on modules). The exemption is per A2A session — an ordinary session is never exempt. |
+| The A2A panel says the admin token is missing, or the proxy answers 503 | The daemon reads the admin token from the encrypted vault; the passphrase must reach it as `SYLVIA_SECRET_KEY` (the launcher sources `sylvia.env`). Check `~/.sylvia/secrets-access.log` — every vault read is recorded there, which is the tripwire: an unexpected line means something opened the vault without being asked to. |
+| `nuncia-secrets` says "no passphrase in SYLVIA_SECRET_KEY" | The CLI needs the passphrase in the environment (`export SYLVIA_SECRET_KEY=…`) or a `--key-file`. The vault itself is at `~/.sylvia/secrets.enc`; its access log is the sibling `~/.sylvia/secrets-access.log`. |
 
 ---
 
@@ -537,3 +541,19 @@ with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those
   `bwrap`/Landlock/Seatbelt sandbox backend, so the sandbox fails closed and the launcher
   opts into running unconfined. Treat the agent as shell access.
 - **Telemetry off by default** (`DSH_TELEMETRY_DISABLED=1`).
+- **The vault raises the cost of finding a secret; it does not create a
+  trust boundary.** The pairing secret and the A2A admin token live in
+  `~/.sylvia/secrets.enc` (AES-256-GCM), and only the passphrase
+  (`~/.sylvia/.secret-key`, mode 0600) is outside it. A local agent runs as
+  the same uid, so it can read the key and decrypt the vault itself — that is
+  the same `danger-full-access` boundary as above, not a new one. What the
+  vault does buy is that a secret is no longer sitting in plain text next to
+  the passphrase, and **every decryption is recorded** in
+  `~/.sylvia/secrets-access.log` — the plugin, the daemon and the CLI all
+  write that one file, so an unexpected line there means something opened
+  the vault without being asked to.
+- **A2A nodes authenticate each other with public keys.** Authority
+  envelopes are signed with a per-node Ed25519 key; a node verifies with the
+  peer's **public** key, so holding a peer's key never lets you mint
+  authority under that peer's name. The bearer token (derived from the
+  pairing secret) is connection auth only — it is not a signing capability.
