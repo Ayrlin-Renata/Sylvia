@@ -153,14 +153,28 @@ async function refreshGate() {
 			["Since", when(g.heldSince)],
 			["Services held", String(g.count)],
 			["Auto-gate", g.gateEnabled ? badge("ok", "on") : badge("neutral", "off")],
-			["Resume on reconnect", g.resumeOnReconnect ? badge("ok", "yes") : badge("neutral", "no (locked)")]
+			["Resume on reconnect", g.resumeOnReconnect ? badge("ok", "yes") : badge("neutral", "no (locked)")],
+			["Exempt services", String((g.exempt ?? []).length)]
 		]);
 		const list = g.services ?? [];
 		$("#services").innerHTML = list.length === 0
 			? `<div class="empty">no services registered — always-mode modules<br>register here in step 6</div>`
-			: `<table><tr><th>Name</th><th>PGID</th><th>Note</th></tr>` +
-				list.map((s) => `<tr><td>${esc(s.name)}</td><td class="mono">${s.pgid}</td><td class="muted">${esc(s.note ?? "")}</td></tr>`).join("") +
+			: `<table><tr><th>Name</th><th>PGID</th><th>Note</th><th>Exempt</th></tr>` +
+				list.map((s) => `<tr><td>${esc(s.name)}</td><td class="mono">${s.pgid}</td><td class="muted">${esc(s.note ?? "")}</td>` +
+					`<td><button data-exempt="${esc(s.name)}" data-on="${s.exempt === true ? "1" : "0"}">${s.exempt === true ? badge("ok", "exempt") : badge("neutral", "held")}</button></td></tr>`).join("") +
 				`</table>`;
+		// The button is rendered HERE, so its handler is attached here too.
+		for (const b of document.querySelectorAll("[data-exempt]")) {
+			b.onclick = async () => {
+				const name = b.dataset.exempt;
+				const next = b.dataset.on !== "1";
+				try {
+					await jpost("/api/netgate/services/exempt", { name, exempt: next });
+					toast(next ? `${name} now stays up while the gate is held.` : `${name} is under the gate again.`);
+					refreshGate();
+				} catch (e) { toast(e.message, true); }
+			};
+		}
 	} catch (e) {
 		$("#gate-kv").innerHTML = kv([["Error", esc(e.message)]]);
 	}
@@ -216,7 +230,8 @@ async function refreshA2A() {
 		["Rejected claims", String(rejected)],
 		["Operators", String((s.operators ?? []).length)],
 		["Chatelaine", s.chatelaine ? badge("ok", "adopted") : badge("neutral", "not yet")],
-		["Announcement", esc(id.announcement || "—")]
+		["Announcement", esc(id.announcement || "—")],
+		["Metered exemption", (s.authority?.a2aExempt === true || s.a2aExempt === true) ? badge("ok", "A2A stays up") : badge("neutral", "A2A stops too")]
 	]);
 	$("#a2a-grants").innerHTML = active.length === 0
 		? `<div class="empty">no live grants</div>`

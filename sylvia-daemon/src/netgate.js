@@ -15,18 +15,20 @@
  * @property {number} pgid        process group id (service must own its group)
  * @property {string} [note]      freeform (e.g. "module:sillytavern")
  * @property {number} registeredAt
+ * @property {boolean} [exempt]   kept RUNNING while the gate is held (DESIGN §20.5)
  */
 
 /**
  * @param {object} opts
  * @param {(pgid:number, signal:string)=>void} [opts.killFn]  injectable for tests
  * @returns {{
- *   register:(name:string, pgid:number, note?:string)=>ManagedService,
+ *   register:(name:string, pgid:number, note?:string, opts?:{exempt?:boolean})=>ManagedService,
  *   unregister:(name:string)=>boolean,
  *   list:()=>ManagedService[],
- *   hold:(reason:string)=>{stopped:string[], failed:{name:string,error:string}[], alreadyHeld:boolean},
+ *   setExempt:(name:string, exempt:boolean)=>boolean,
+ *   hold:(reason:string)=>{stopped:string[], failed:{name:string,error:string}[], exempt:string[], alreadyHeld:boolean},
  *   resume:(reason:string)=>{resumed:string[], failed:{name:string,error:string}[], notHeld:boolean},
- *   status:()=>{held:boolean, reason:string|null, heldSince:number|null, count:number}
+ *   status:()=>{held:boolean, reason:string|null, heldSince:number|null, count:number, exempt:string[]}
  * }}
  */
 export function createNetgate({ killFn = defaultKill } = {}) {
@@ -36,13 +38,32 @@ export function createNetgate({ killFn = defaultKill } = {}) {
 	let heldSince = null;
 	let holdReason = null;
 
-	function register(name, pgid, note) {
+	function register(name, pgid, note, opts = {}) {
 		if (!name || !Number.isInteger(pgid) || pgid <= 0) {
 			throw new Error(`invalid service registration: name=${name} pgid=${pgid}`);
 		}
-		const svc = { name, pgid, note, registeredAt: Date.now() };
+		const svc = { name, pgid, note, registeredAt: Date.now(), exempt: opts.exempt === true };
 		services.set(name, svc);
 		return svc;
+	}
+
+	/**
+	 * Mark a registered service exempt from the gate (DESIGN §20.5).
+	 *
+	 * An exempt service keeps RUNNING while the gate is held: it is not
+	 * SIGSTOPped, and it is not SIGCONTed on resume (it never stopped). This
+	 * is what lets the A2A listener stay reachable on metered data when the
+	 * node says so — while everything else stays stopped.
+	 *
+	 * @param {string} name
+	 * @param {boolean} exempt
+	 * @returns {boolean} whether the service exists
+	 */
+	function setExempt(name, exempt) {
+		const svc = services.get(name);
+		if (svc === undefined) return false;
+		svc.exempt = exempt === true;
+		return true;
 	}
 
 	function unregister(name) {
@@ -55,11 +76,14 @@ export function createNetgate({ killFn = defaultKill } = {}) {
 
 	function hold(reason) {
 		if (held) {
-			return { stopped: [], failed: [], alreadyHeld: true };
+			return { stopped: [], failed: [], exempt: exemptNames(), alreadyHeld: true };
 		}
 		const stopped = [];
 		const failed = [];
 		for (const svc of services.values()) {
+			// An exempt service keeps running: metered data stops the managed
+			// traffic, not the A2A listener the operator asked to keep up.
+			if (svc.exempt === true) continue;
 			try {
 				// Negative pgid = whole process group (services run under setsid).
 				killFn(-svc.pgid, "SIGSTOP");
@@ -72,7 +96,7 @@ export function createNetgate({ killFn = defaultKill } = {}) {
 		held = true;
 		heldSince = Date.now();
 		holdReason = reason ?? null;
-		return { stopped, failed, alreadyHeld: false };
+		return { stopped, failed, exempt: exemptNames(), alreadyHeld: false };
 	}
 
 	function resume(reason) {
@@ -82,6 +106,9 @@ export function createNetgate({ killFn = defaultKill } = {}) {
 		const resumed = [];
 		const failed = [];
 		for (const svc of services.values()) {
+			// An exempt service was never stopped — sending it SIGCONT would
+			// be harmless but is a lie about what the gate did.
+			if (svc.exempt === true) continue;
 			try {
 				killFn(-svc.pgid, "SIGCONT");
 				resumed.push(svc.name);
@@ -95,11 +122,15 @@ export function createNetgate({ killFn = defaultKill } = {}) {
 		return { resumed, failed, notHeld: false };
 	}
 
-	function status() {
-		return { held, reason: holdReason, heldSince, count: services.size };
+	function exemptNames() {
+		return [...services.values()].filter((svc) => svc.exempt === true).map((svc) => svc.name);
 	}
 
-	return { register, unregister, list, hold, resume, status };
+	function status() {
+		return { held, reason: holdReason, heldSince, count: services.size, exempt: exemptNames() };
+	}
+
+	return { register, unregister, list, setExempt, hold, resume, status };
 }
 
 function defaultKill(pgid, signal) {

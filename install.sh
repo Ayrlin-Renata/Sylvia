@@ -1404,6 +1404,15 @@ EOF
       if SYLVIA_SECRET_KEY="$(cat "$SYLVIA_HOME/.secret-key" 2>/dev/null)" \
          node "$SYLVIA_HOME/dsh-nuncia/bin/nuncia-secrets.js" set $vault_pairs --file "$vault_file" >/dev/null 2>&1; then
         chmod 600 "$vault_file"
+        # The secrets are in the vault now, so they must LEAVE the env file —
+        # otherwise the plaintext is still on disk next to the passphrase and
+        # the vault buys nothing. The env file keeps only the passphrase.
+        for name in NUNCIA_PAIRING_SECRET NUNCIA_ADMIN_TOKEN; do
+          if grep -q "^export $name=" "$SYLVIA_HOME/sylvia.env" 2>/dev/null; then
+            sed -i "/^export $name=/d" "$SYLVIA_HOME/sylvia.env"
+            ok "removed $name from sylvia.env (it is in the vault now)"
+          fi
+        done
         ok "wrote the encrypted secret vault ($vault_file)"
       else
         note "could not write the secret vault — the secrets stay in the environment"

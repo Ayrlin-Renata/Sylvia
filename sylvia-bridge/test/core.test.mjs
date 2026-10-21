@@ -273,3 +273,33 @@ test('the chatelaine session is recognised as A2A by its id', () => {
   core.onSample(METERED);
   assert.equal(core.isExempt(agent), true);
 });
+
+// -- the daemon's exemption decision (DESIGN §20.5) ---------------------------
+
+test('the daemon exemption exempts an A2A session even when the local flag is off', () => {
+  const { core, events } = harness({}, { allowA2AOnMetered: false });
+  const agent = a2aAgent('op-daemon');
+  core.track(agent);
+  core.onAgentStatus(agent, 'running');
+  // The daemon says the A2A listener stays up; that rides the sample.
+  core.onSample({ metered: true, transport: 'cellular', at: Date.now(), a2aExempt: true });
+  assert.equal(events.cancels.length, 0, 'the daemon exemption is honoured');
+});
+
+test('the daemon exemption never exempts an ordinary session', () => {
+  const { core, events } = harness({}, { allowA2AOnMetered: false });
+  const peer = { id: 'plain' };
+  core.track(peer);
+  core.onAgentStatus(peer, 'running');
+  core.onSample({ metered: true, transport: 'cellular', at: Date.now(), a2aExempt: true });
+  assert.equal(events.cancels.length, 1, 'only A2A sessions are exempt');
+});
+
+test('without the daemon exemption the local flag alone decides', () => {
+  const { core, events } = harness({}, { allowA2AOnMetered: false });
+  const agent = a2aAgent('op-plain');
+  core.track(agent);
+  core.onAgentStatus(agent, 'running');
+  core.onSample({ metered: true, transport: 'cellular', at: Date.now(), a2aExempt: false });
+  assert.equal(events.cancels.length, 1, 'fail-closed by default');
+});

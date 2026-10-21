@@ -16,7 +16,11 @@ export function freshSample(body, staleAfterMs, nowMs = Date.now()) {
   if (nowMs - body.at > staleAfterMs) return null;
   if (typeof body.metered !== 'boolean') return null;
   const transport = typeof body.transport === 'string' ? body.transport : 'unknown';
-  return { metered: body.metered, transport, at: body.at };
+  // The daemon's own exemption decision travels with the sample: the daemon
+  // is the authority on the network, so it is the authority on what stays up
+  // when the gate holds (DESIGN §20.5).
+  const a2aExempt = body.a2aExempt === true;
+  return { metered: body.metered, transport, at: body.at, a2aExempt };
 }
 
 export function expandHome(p) {

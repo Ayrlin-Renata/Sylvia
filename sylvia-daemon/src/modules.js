@@ -80,10 +80,12 @@ export function validateManifest(raw, dirName) {
 }
 
 export class ModuleManager {
-	constructor({ modulesDir, store, netgate, log, exec = defaultExec, spawnFn = defaultSpawn, killFn = defaultKill }) {
+	constructor({ modulesDir, store, netgate, log, exec = defaultExec, spawnFn = defaultSpawn, killFn = defaultKill, exemptA2A = false }) {
 		this.modulesDir = modulesDir;
 		this.store = store;
 		this.netgate = netgate;
+		// Whether the A2A module is exempt from the netgate (DESIGN §20.5).
+		this.exemptA2A = exemptA2A === true;
 		this.log = log;
 		this.exec = exec;
 		this.spawnFn = spawnFn;
@@ -219,7 +221,7 @@ export class ModuleManager {
 
 		if (mod.manifest.behavior === "always" && this.netgate && pid) {
 			try {
-				this.netgate.register(`module:${id}`, pid, `module ${id} (behavior=always)`);
+				this.netgate.register(`module:${id}`, pid, `module ${id} (behavior=always)`, { exempt: this.exemptA2A === true });
 			} catch (e) {
 				rt.lastError = `netgate register failed: ${e.message}`;
 			}

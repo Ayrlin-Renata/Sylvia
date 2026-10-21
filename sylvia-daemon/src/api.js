@@ -150,7 +150,10 @@ export function createApi({ config, netgate, getNetstate, getMeta, registry, mod
 
 			// ---- network -----------------------------------------------------
 			if (req.method === "GET" && p === "/api/network") {
-				return send(res, 200, await getNetstate());
+				const state = await getNetstate();
+				// The bridge samples this payload: the exemption rides along
+				// so the in-process gate and the daemon's netgate agree.
+				return send(res, 200, { ...state, a2aExempt: config.a2aExemptFromGate === true });
 			}
 
 			// ---- netgate -----------------------------------------------------
@@ -172,9 +175,21 @@ export function createApi({ config, netgate, getNetstate, getMeta, registry, mod
 			}
 			if (req.method === "POST" && p === "/api/netgate/services") {
 				const body = await readJsonBody(req);
-				const svc = netgate.register(String(body.name ?? ""), Number(body.pgid), body.note);
+				const svc = netgate.register(String(body.name ?? ""), Number(body.pgid), body.note, { exempt: body.exempt === true });
 				await persistNetgate();
 				return send(res, 200, svc);
+			}
+			// POST /api/netgate/services/exempt — flip the exempt flag of a
+			// registered service. An exempt service keeps running while the
+			// gate is held (DESIGN §20.5): the A2A listener stays reachable
+			// on metered data when the node says so.
+			if (req.method === "POST" && p === "/api/netgate/services/exempt") {
+				const body = await readJsonBody(req);
+				const name = String(body.name ?? "");
+				const ok = netgate.setExempt(name, body.exempt !== false);
+				if (!ok) return send(res, 404, { error: `no such service: ${name}` });
+				await persistNetgate();
+				return send(res, 200, { ok: true, name, exempt: body.exempt !== false });
 			}
 			if (req.method === "POST" && p === "/api/netgate/services/unregister") {
 				const body = await readJsonBody(req);

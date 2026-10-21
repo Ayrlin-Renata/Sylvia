@@ -11,7 +11,9 @@ const NOW = 1_000_000_000;
 
 test('freshSample accepts a fresh valid payload', () => {
   const s = freshSample({ metered: true, transport: 'cellular', at: NOW - 5_000 }, 60_000, NOW);
-  assert.deepEqual(s, { metered: true, transport: 'cellular', at: NOW - 5_000 });
+  // The sample carries the daemon's exemption decision (DESIGN §20.5): the
+  // bridge honours the daemon's call, so the field travels with the sample.
+  assert.deepEqual(s, { metered: true, transport: 'cellular', at: NOW - 5_000, a2aExempt: false });
 });
 
 test('freshSample rejects stale / malformed payloads', () => {
@@ -35,7 +37,7 @@ test('sampleNetwork prefers the daemon API', async () => {
     now: () => NOW,
   };
   const s = await sampleNetwork(CFG, deps);
-  assert.deepEqual(s, { metered: false, transport: 'wifi', at: NOW - 1_000 });
+  assert.deepEqual(s, { metered: false, transport: 'wifi', at: NOW - 1_000, a2aExempt: false });
   assert.equal(calls[0], 'http://127.0.0.1:3090/api/network');
 });
 
@@ -51,7 +53,7 @@ test('sampleNetwork falls back to netstate.json when the daemon is down', async 
     now: () => NOW,
   };
   const s = await sampleNetwork(CFG, deps);
-  assert.deepEqual(s, { metered: true, transport: 'cellular', at: NOW - 2_000 });
+  assert.deepEqual(s, { metered: true, transport: 'cellular', at: NOW - 2_000, a2aExempt: false });
 });
 
 test('sampleNetwork returns null when both sources fail', async () => {

@@ -65,7 +65,10 @@ export async function main(env = process.env) {
 		modulesDir: path.join(config.stateDir, "modules"),
 		store,
 		netgate,
-		log
+		log,
+		// The A2A listener keeps serving while the gate is held when the node
+		// opts in (DESIGN §20.5). Off by default: fail-closed.
+		exemptA2A: config.a2aExemptFromGate === true
 	});
 	const { found, errors } = await modules.discover();
 	for (const err of errors) log("module error:", err);

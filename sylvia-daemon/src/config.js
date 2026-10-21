@@ -104,6 +104,10 @@ export function loadConfig(env = process.env) {
 		// wifi returns; release is explicit (control panel / agent / plugin).
 		resumeOnReconnect: bool(env.SYLVIA_RESUME_ON_RECONNECT, false),
 		gateEnabled: bool(env.SYLVIA_NET_GATE_ENABLED, true),
+		// The A2A listener stays reachable while the gate is held (DESIGN §20.5).
+		// Default OFF: metered data means no managed traffic, and the A2A
+		// listener is managed traffic like any other until the node opts in.
+		a2aExemptFromGate: bool(env.SYLVIA_A2A_EXEMPT_FROM_GATE, false),
 
 		// --- registry / policy (§4–§5) --------------------------------------
 		// Offline axis: now - lastSeen > offlineThresholdMs ⇒ hidden regardless

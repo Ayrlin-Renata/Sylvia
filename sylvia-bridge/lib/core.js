@@ -119,9 +119,22 @@ export function createBridgeCore(userConfig = {}, deps = {}) {
     else exempt.delete(agent)
   }
 
-  /** Is this agent exempt right now? */
+  /** Is this agent exempt right now?
+   *
+   *  The exemption needs BOTH:
+   *    - the agent IS an A2A session (an operator or the chatelaine), and
+   *    - somebody with the authority to decide said so: this node's
+   *      `allowA2AOnMetered` flag, or the daemon's decision (which rides the
+   *      network sample).
+   *  An ordinary session is never exempt, whatever the flags say.
+   */
   function isExempt(agent) {
-    return cfg.allowA2AOnMetered === true && (exempt.has(agent) || isA2AAgent(agent))
+    const allowed = cfg.allowA2AOnMetered === true || lastSample?.a2aExempt === true
+    if (!allowed) return false
+    // Explicitly exempted (setExempt) — any agent, by deliberate decision.
+    if (exempt.has(agent)) return true
+    // Automatically exempt: the agent IS an A2A session.
+    return isA2AAgent(agent)
   }
 
   function decide(sample) {
