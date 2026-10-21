@@ -2146,3 +2146,134 @@ daemon 153/153; bridge 39/39. `test-tools.mjs` now asserts six tools and that
 a non-chatelaine caller is refused `message_peer_chatelaine`;
 `test-chatelaine-resilience.test.mjs` asserts a migrated-but-absent id is
 created UNDER THAT ID rather than silently using the untagged thread.
+## 20.14 P4 plan — one chatelaine per device, and it must actually run (2026-10-20)
+
+The §20.13 chatelaine-to-chatelaine channel is withdrawn. The chatelaine's
+job is to **centralize decision-making for the local device**; a mesh of
+chatelaines has no single decision authority per device, and every cross-node
+conversation becomes a second thread that can diverge from the operator task
+carrying the work. Peers reach this node as *tasks* (`a2a_send` → operator);
+an operator escalates to its own chatelaine; the chatelaine decides. That is
+the whole topology.
+
+### 20.14.1 Two defects that made the layer decorative
+
+**It was never woken.** `report()` delivered with `inject` unless `wake` was
+requested, and `report_to_chatelaine` requested it only for a `question`.
+`inject` is `send(msg, "next-step", false)` — durable inbox, no turn. Both
+chatelaine sessions had exactly one `turn/start`, and on both nodes that turn
+was started by a test message using `wake: true`; **no operator report ever
+caused a turn.** The tool's render said "the chatelaine will see this on its
+next turn" and there was never a next turn.
+
+**It had no role.** `createSession()` passed `{cwd, agentPreset}` and
+nothing else. `operatorBrief()` exists for operators only, so the chatelaine
+woke as an unlabelled session with one message and no idea what it was —
+which is why operators narrated as the chatelaine: nothing distinguished the
+roles, and the report render invited the model to continue in that voice.
+
+There is also no title API in this train (`title` appears in no field of
+`dsh-agent-loop`, `dsh-session-query` or `dsh-api-session-controller`;
+`session/title` is an allowlisted event with no consumer), so a chatelaine
+cannot be "labelled" — it is identified by its `a2a-chatelaine-<uuid>` session
+id and by its brief.
+
+### 20.14.2 The tool set (decided 2026-10-20)
+
+| tool | caller | effect |
+| --- | --- | --- |
+| `message_chatelaine` | **any local session** | delivers to the local chatelaine, labelled with the caller's identity (operator task/handle, or a local session id). The entry point for a non-nuncia local agent that wants A2A reach. |
+| `a2a_send` | **chatelaine only** | sends to any A2A endpoint. A nuncia peer gets an operator session; anything else gets a plain task. |
+| `send_nuncia` | **chatelaine** (initiate) and **operator** (reply on its own task only) | nuncia-to-nuncia. First contact and replies are the same operator task, so a peer's follow-up continues the conversation it already started. |
+| `message_local_session` | **operator**, only on a path the chatelaine approved for that (operator, session) pair | delivers to a local session. |
+| `approve_local_contact` | **chatelaine only** | records/revokes an (operator → local session) path. |
+| `request_user_intent` | **chatelaine only** | mints a grant. An operator no longer asks the human directly; it asks the chatelaine. |
+| `set_announcement` | chatelaine only | unchanged. |
+
+Removed: `report_to_chatelaine` (merged into `message_chatelaine`),
+`reply_to_operator` (replaced by `send_nuncia`; the chatelaine answers a local
+operator through `message_local_session`), `message_peer_chatelaine` (§20.13
+withdrawn), and the inbound `metadata.toChatelaine` executor branch.
+
+Rationale for the ownership inversion: today `a2a_send` and
+`request_user_intent` are unguarded while `set_announcement` is gated — any
+local session, or any operator, can send A2A tasks and mint authority in this
+node's name. The rule is now: **outbound reach and authority are the
+chatelaine's; operators execute inside a grant and escalate.**
+
+### 20.14.3 The chatelaine must persist and must be briefed
+
+The session is a normal v4 session on disk; the plugin never stores its
+content. What it stores is the identity, in `<stateDir>/chatelaine.json`:
+
+```
+{ "version": 1, "sessionId": "a2a-chatelaine-…", "previousSessionId": "…",
+  "briefVersion": 1, "briefedAt": "…" }
+```
+
+That file lives outside the plugin tree, and a reloaded plugin *resumes* the
+session rather than recreating it, so **both survive a plugin upgrade**. The
+guards that make that true:
+
+* never create over an id that already has a session — probe `agents.get`,
+  then `agents.resume`, and treat "exists" as success;
+* never rewrite `sessionId` except through the explicit new-session command
+  (which records `previousSessionId`);
+* the brief is injected once per `briefVersion` per session id, not on every
+  boot (an unbriefed-but-existing session must still get it).
+
+At boot the plugin creates the session if it is missing, briefs it, and wakes
+it **once when it was newly created** — so a fresh node has a real, visible
+chatelaine with an actual first turn — but does not burn a turn on every
+restart.
+
+`POST {adminPath}/chatelaine/new` (loopback + bearer) and
+`bin/nuncia-chatelaine.js new|show|brief` create a **new** chatelaine session,
+brief it, record the previous id, and return the new id. The operator then
+pastes a billion-context handoff into that thread by hand. Context remains
+self-managed; the plugin only guarantees identity, brief and delivery.
+
+### 20.14.4 Wake policy (decided 2026-10-20)
+
+A report must not be a silent write. Delivery is durable `inject` plus a
+**coalesced wake**:
+
+* `question: true` wakes immediately (`followup`, no timer);
+* ordinary reports arm a single unref'd 30 s timer; when it fires the
+  chatelaine gets one `followup` carrying a "N reports are pending — read them
+  before acting" notice, so a burst of reports costs one turn, not N;
+* a report that arrives while a wake is armed does not re-arm it;
+* if the chatelaine is mid-turn the inbox item is consumed at the next step,
+  and the timer still fires so the turn is not left half-informed.
+
+Delivery is still durable-first: a crash between inject and wake leaves the
+report in the inbox, and the next wake picks it up.
+
+### 20.14.5 Order of work
+
+1. **P4.1 identity** — `chatelaineBrief()`, boot create/brief/wake-once,
+   `briefVersion` bookkeeping, `POST /chatelaine/new` + CLI, persistence
+   guards. Acceptance: a fresh node has a briefed chatelaine with one turn; a
+   plugin reload keeps the same id and does not re-brief; `new` produces a
+   second session with `previousSessionId` recorded.
+2. **P4.2 ownership** — the matrix in 20.14.2, including the three removals
+   and the inbound-branch deletion. Acceptance: an operator calling
+   `a2a_send`/`request_user_intent` is refused by name; a local session cannot
+   call them but can call `message_chatelaine`; an operator cannot call
+   `send_nuncia` for a task that is not its own.
+3. **P4.3 wake** — coalescing, question bypass, crash-safe ordering.
+   Acceptance: one report produces exactly one turn within ~30 s; five
+   reports in a burst produce one turn naming five; a question produces a turn
+   immediately.
+4. **P4.4 local contact** — `approve_local_contact` + `message_local_session`
+   with a path table (TTL optional). Acceptance: an unapproved pair is
+   refused with the reason; after approval the message lands; revoking stops
+   it.
+5. **P4.5 docs/tests/deploy** — suite additions, README table, DESIGN
+   record, deploy to desk and the AVD, two-node acceptance.
+
+### 20.14.6 Still open from P3.4
+
+The registry last-seen join, a dedicated README A2A section, and the arm64
+physical-device acceptance. None of them block P4; they should be picked up
+before calling §20 finished.
