@@ -2397,3 +2397,52 @@ P3-AUTH / P4 CHATELAINE PASS`. Deployed identically to both nodes
 appending a marker comment to `cordis.patch.yml`; desktop reports
 `name=sylviana`, peer `vienzie`, AVD reports `name=vienzie` with a fresh
 `since`. Fork commit `3ca760f`.
+## 20.16 The tool matrix is the chatelaine's (2026-10-21)
+
+The §20.14 tool matrix ("who may call what") was built: authorization is now an
+IDENTITY gate in each tool, not a property of the wire. A caller is either the
+adopted chatelaine session or it is not, and every privileged tool says so.
+
+### 20.16.1 What changed
+
+* **`ask_user_intent`** (renamed from `request_user_intent`) and **`a2a_send`**
+  are chatelaine-only. An operator or any other session that calls them gets
+  `"<tool> belongs to the chatelaine only — ask for it with
+  message_chatelaine and wait for its decision"`.
+* **`message_chatelaine`** is the universal entry point: any local session
+  reports to it, asks it a question (wake + question:), or requests a send or a
+  grant; the chatelaine decides.
+* **`message_local_session`** (chatelaine-only) answers and steers local
+  sessions by operator handle or session id. A handle the book no longer holds
+  (pruned/expired) is refused BY NAME instead of silently falling through as a
+  session id — `unknown operator handle op_… — pruned or expired
+  (operator_authority shows the live windows)`.
+* **`send_nuncia`** (chatelaine-only) replies on a peer's open conversation
+  WITHOUT the caller naming an exchange: open records are scanned for the
+  origin, an open one wins over a terminal one, and an unclaimed origin's
+  exchange is reused only when it is unambiguous. This is the complement of
+  §20.15.1: senders address a peer; the ROUTING (which operator session) stays
+  receiver-side, and even which exchange continues is resolved by the client
+  library, not the caller.
+* **Withdrawn**: `report_to_chatelaine`, `reply_to_operator`,
+  `message_peer_chatelaine`, and the inbound `metadata.toChatelaine` branch.
+  Peers route to operators (or, with an intent grant, the chatelaine thread)
+  via the §20.15 continuity path; there is no second wire protocol.
+
+### 20.16.2 The dial plan (peerUrls)
+
+Neither node had outbound destinations configured — `a2a_send` could reach a
+peer card but never dial it. Network realities:
+
+* The AVD sees the host as `10.0.2.2`, so AVD config:
+  `peerUrls: [sylviana=http://10.0.2.2:4123]`.
+* The desktop reaches the AVD only through an adb forward
+  (`adb -s 127.0.0.1:5555 forward tcp:4124 tcp:4123`), so desktop config:
+  `peerUrls: [vienzie=http://127.0.0.1:4124]`. Re-issue the forward after an
+  adb-server restart; the tunnel is loopback-only.
+
+Verified live: bare card + bare POST probes across both hops answer 401
+(serving + auth-gated) rather than connection-refused.
+
+Fork commit `97ef417`; suite 155 pass / 0 fail with all harnesses
+(`ALL SMOKE / AUTHORITY / TOOLS / AUTH / P2 / P3-AUTH / P4 CHATELAINE PASS`).
