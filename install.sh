@@ -1414,6 +1414,11 @@ EOF
           fi
         done
         ok "wrote the encrypted secret vault ($vault_file)"
+        # ONE tripwire. The plugin and the daemon both open this vault, so both
+        # must write the SAME access log — otherwise "who opened the vault?"
+        # has two answers and neither is complete.
+        chmod 600 "$SYLVIA_HOME/secrets-access.log" 2>/dev/null || true
+        ok "the vault tripwire is $SYLVIA_HOME/secrets-access.log (plugin + daemon)"
       else
         note "could not write the secret vault — the secrets stay in the environment"
       fi

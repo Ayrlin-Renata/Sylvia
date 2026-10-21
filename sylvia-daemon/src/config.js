@@ -153,8 +153,11 @@ export function loadConfig(env = process.env) {
 		// An earlier version read env.SYLVIA_SECRET_KEY here, which put the
 		// secret itself in the config object (and would have logged it).
 		a2aVaultKeyEnv: env.SYLVIA_A2A_VAULT_KEY_ENV || "SYLVIA_SECRET_KEY",
-		// Where the daemon records vault reads. It defaults to a sibling of
-		// the vault; point it at the plugin's own log to keep ONE tripwire.
-		a2aVaultAuditFile: env.SYLVIA_A2A_VAULT_AUDIT_FILE || path.join(stateDir, "secrets-access.log")
+		// Where the daemon records vault reads. It must be the SAME file the
+		// plugin writes to, or "who opened the vault?" has two answers and
+		// neither is complete. Both default to a sibling of the vault, so
+		// they agree without any configuration.
+		a2aVaultAuditFile: env.SYLVIA_A2A_VAULT_AUDIT_FILE
+			|| path.join(path.dirname(env.SYLVIA_A2A_VAULT_FILE || path.join(stateDir, "secrets.enc")), "secrets-access.log")
 	};
 }
