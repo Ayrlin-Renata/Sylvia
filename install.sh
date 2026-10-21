@@ -1671,22 +1671,32 @@ EOF
   # is the human's to replace: never overwrite an existing pool, and never
   # rewrite it on a re-run. A missing pool is not fatal — nuncia falls back to
   # the hostname.
-  if [ -f "$SYLVIA_HOME/node-names.txt" ]; then
-    skip "$SYLVIA_HOME/node-names.txt already exists"
+  # 2026-10-21: the asset was renamed node-names.txt -> list_names.txt (user
+  # request); an older pool is migrated so a pre-rename install keeps one file.
+  if [ -f "$SYLVIA_HOME/node-names.txt" ] && [ ! -f "$SYLVIA_HOME/list_names.txt" ]; then
+    mv "$SYLVIA_HOME/node-names.txt" "$SYLVIA_HOME/list_names.txt" \
+      || note "could not rename the name pool — keeping $SYLVIA_HOME/node-names.txt"
+    ok "renamed $SYLVIA_HOME/node-names.txt -> list_names.txt (same pool)"
+  fi
+  if [ -f "$SYLVIA_HOME/list_names.txt" ]; then
+    skip "$SYLVIA_HOME/list_names.txt already exists"
   else
-    local names_src="$SCRIPT_DIR/assets/node-names.txt"
-    if [ ! -f "$names_src" ] && [ ! -f "$SYLVIA_HOME/repo/assets/node-names.txt" ]; then
+    local names_src="$SCRIPT_DIR/assets/list_names.txt"
+    if [ ! -f "$names_src" ] && [ -f "$SCRIPT_DIR/assets/node-names.txt" ]; then
+      names_src="$SCRIPT_DIR/assets/node-names.txt"
+    fi
+    if [ ! -f "$names_src" ] && [ ! -f "$SYLVIA_HOME/repo/assets/list_names.txt" ]; then
       ensure_dir "$SYLVIA_HOME"
-      note "cloning Sylvia repo for assets/node-names.txt: $SYLVIA_REPO_URL"
+      note "cloning Sylvia repo for assets/list_names.txt: $SYLVIA_REPO_URL"
       [ -d "$SYLVIA_HOME/repo" ] || git clone --depth 1 "$SYLVIA_REPO_URL" "$SYLVIA_HOME/repo" \
         || note "repo clone failed (skipped) — nuncia will name nodes after the hostname"
     fi
-    [ -f "$names_src" ] || names_src="$SYLVIA_HOME/repo/assets/node-names.txt"
+    [ -f "$names_src" ] || names_src="$SYLVIA_HOME/repo/assets/list_names.txt"
     if [ -f "$names_src" ]; then
-      cp "$names_src" "$SYLVIA_HOME/node-names.txt" || note "could not seed the name pool (skipped)"
-      ok "seeded $SYLVIA_HOME/node-names.txt (nuncia picks a node name from it)"
+      cp "$names_src" "$SYLVIA_HOME/list_names.txt" || note "could not seed the name pool (skipped)"
+      ok "seeded $SYLVIA_HOME/list_names.txt (nuncia picks a node name from it)"
     else
-      note "assets/node-names.txt not found (skipped) — nuncia will name nodes after the hostname"
+      note "assets/list_names.txt not found (skipped) — nuncia will name nodes after the hostname"
     fi
   fi
 }

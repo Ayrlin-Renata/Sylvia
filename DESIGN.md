@@ -1707,9 +1707,13 @@ exempt-flag is only needed if someone later runs nulia standalone.
 
 - The panel joins configured peers (from `/status`) with registry last-seen —
   display only; nulia stays barebones (discussion point 3).
-- Sylvia ships `assets/node-names.txt` (human-supplied list), seeded to
-  `~/.sylvia/node-names.txt` on install, wired as `nodeNameFile` for fresh
-  nodes.
+- Sylvia ships `assets/list_names.txt` (human-supplied list; renamed from
+  `node-names.txt` 2026-10-21 per user request), seeded to
+  `~/.sylvia/list_names.txt` on install (older pools are migrated by rename),
+  wired as `nodeNameFile` for fresh nodes. The adopted name now names the node
+  on the agent card AND the chatelaine itself ("Your name is <name>"), so
+  humans can tell chatelaines apart; an explicit `nodeName:` pin defeats the
+  list and is no longer seeded in configs.
 - Docs: README A2A section (install → pair → panel), troubleshooting rows
   (mint 401: admin token mismatch; card 401: expected — fetch with a bearer),
   DESIGN §20.12.1 acceptance record.
@@ -1764,9 +1768,11 @@ stays barebones.
 **Names.** `authority.nodeNameFile` (newline-delimited, `#` comments allowed):
 with no configured name, the first boot picks one at random and remembers it in
 `<stateDir>/identity.json`; with no file, the hostname. Precedence is
-configured → persisted → file → hostname. The 5000-name list the operator
-supplied lives at `assets/node-names.txt` in the Sylvia repo and is seeded to
-`~/.sylvia/node-names.txt` by the installer (P3.4). Names are cosmetic:
+configured → persisted → file → hostname. The name list the operator supplied
+lives at `assets/list_names.txt` in the Sylvia repo (renamed from
+`node-names.txt` 2026-10-21) and is seeded to `~/.sylvia/list_names.txt` by the
+installer (P3.4; an older pool is migrated by rename, never overwritten). Names
+are cosmetic:
 collisions resolve by `kid`, which is already in every card, envelope and the
 pairing `--check` flow.
 
