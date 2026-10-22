@@ -2446,3 +2446,78 @@ Verified live: bare card + bare POST probes across both hops answer 401
 
 Fork commit `97ef417`; suite 155 pass / 0 fail with all harnesses
 (`ALL SMOKE / AUTHORITY / TOOLS / AUTH / P2 / P3-AUTH / P4 CHATELAINE PASS`).
+
+## 20.17 A preset is not a header field: mount it on RESUME too (2026-10-22)
+
+This closes the open question from the naming round: *why did the desktop
+chatelaine session have 179 tools when every other session on the node had
+209, and why was there no `read`?*
+
+### 20.17.1 The mechanism
+
+DSH does not mount an Agent preset for its caller. `meta.agentPreset` is
+recorded as a **label** in the session header (`dsh-session`:
+`...(meta?.agentPreset === undefined ? {} : { agentPreset: meta.agentPreset })`)
+and nothing else happens. The preset is mounted by a `setup(agentCtx)` callback
+that the agent loop runs **before the session publishes**
+(`dsh-agent-loop` → `setupAndPublish(..., options.setup, ...)` →
+`setup?.(prepared.agent.ctx, prepared.agent)`), and the canonical caller passes
+it on **both** paths — `dsh-api-session-controller`'s `composeAgent(presetId)`
+returns `{ agentPreset: resolvedId, setup: async (agentCtx, agent) => { …; await presets.mount(agentCtx, resolvedId) } }`,
+and `resumeObserved` passes `setup: composition.setup` to `agents.resume`.
+
+nuncia mounted on create only. That mattered because the chatelaine runtime
+deliberately disposes the create-time handle and keeps only the session id
+(fiber-owned handles), so **every** later delivery resumes. A resumed session
+with no `setup` has no preset: only profile-realm plugins (cabinet, browser,
+research, context) — no `read`/`write`/`edit`/`glob`/`grep`/`pwsh`/`shell`,
+no delegation group, no `todo`, no `skill`, no `ask_user_question`. The
+projection still said `agentPreset: standard`, so the session *believed* it had
+the preset, which is why the failure looked like missing guidance rather than a
+missing mount (it spent a whole turn "trying the alias tools for file access").
+
+### 20.17.2 The rule
+
+> Any A2A-created agent that outlives its handle must mount its preset through a
+> single `setup` used by `create` **and** `resume`, and it must resolve the id
+> first (`presets.resolve` is what raises `agent-preset/not-found` with the
+> available list) rather than passing the config string straight to `mount`.
+
+`mountPresetInto(agentCtx)` in `lib/chatelaine.js` is that callback; the operator
+create path in `lib/index.js` resolves the same way. When `agentPresets` is
+unavailable the runtime now warns **once** and names what the session loses,
+instead of running crippled in silence. `mount` needs a scoped ctx
+(`agent-preset: mounting requires a scope`) — the agent ctx it receives is
+scoped, and `bind` is idempotent per generation, so a re-mount on an already
+bound fiber is a no-op.
+
+### 20.17.3 Proof
+
+* `tests/test-preset-mount.mjs` — 18 checks across four contexts (mounted,
+  unset, unavailable, unknown). The resume case simulates a restart by dropping
+  every live handle, i.e. the exact condition that used to strip the preset.
+* Live, desktop node, same chatelaine session
+  (`a2a-chatelaine-15bfde54-ccec-4e40-9930-8bb75020a385`), tool calls per turn:
+
+  | turn | tools used |
+  | --- | --- |
+  | 1 (pre-fix) | `cabinet_search×13`, `cabinet_list×3`, `cabinet_show×21`, `dsh_browser_*×7`, `cabinet_config×6`, `list_mcp_resources×1`, `working_directory×1` |
+  | 3 (post-fix) | `shell×17`, `read_client×1`, `operator_authority×2`, `cabinet_show×1`, `message_local_session×2` |
+
+  The resume itself is visible in the log: the chatelaine accepted a delivery
+  two seconds before it published its first tool call, which only happens if
+  `setup` completed.
+
+Fork commit `b345304`; suite 155 pass / 0 fail plus
+`ALL PRESET MOUNT PASS (18 checks)`.
+
+### 20.17.4 A nice side effect
+
+Turn 3 was provoked by asking the chatelaine, through an operator, how many
+tools it had. It **declined**: both live handles were `level: "peer"` with no
+grant, and it read the request as capability fingerprinting rather than a task
+("a capability fingerprint, not a task… the pair reads as staged
+reconnaissance"). That is the authority model doing its job on a question the
+operator's preamble had framed as harmless — worth keeping in mind when writing
+probe tasks: the chatelaine checks `operator_authority` before it answers, and
+that is the behaviour we want.
