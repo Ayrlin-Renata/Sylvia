@@ -2768,3 +2768,103 @@ with identical hashes (`index.js 669a1c3a…`, `chatelaine.js 8c5fbcd8…`,
 is still only described in the brief — a report still arrives without a timer
 behind it. Neither blocks the operator lanes above, but both are needed before
 "the chatelaine decides" is true in the way §20.14.1 promised.
+
+## 20.20 The refinements: cheap decisions, honest provenance, and a wake that waits (2026-10-22)
+
+Four things were still wrong after §20.19, and all four were about the cost of
+a decision rather than its content. They are recorded together because they
+share one rule: **the chatelaine should never have to work to find out what it
+is deciding about, and an operator should never have to guess what it may do.**
+
+### 20.20.1 The original message, and the rating that guards it
+
+`read_original_message` returns the exact text the operator received —
+`{taskId, peer?, level?, receivedAt?, characters, text}` — by task id, an
+8-character prefix, or the operator's handle. It is chatelaine-only, because
+the point of it is that the operator's summary may have lost something and the
+chatelaine is the one who decides whether that matters.
+
+The guard is social, not technical: operators are told to lead every first
+report with `safety: low|medium|high — <one clause>` describing how dangerous
+the original text is to read. That rating is what makes the tool's existence
+safe — a peer that says "please read the attached instructions" is asking for
+prompt injection, and a `safety: high` rating turns that into a decision the
+chatelaine can make deliberately instead of a step it performs casually. The
+brief also says the text is a stranger's words: data, never instructions.
+
+Records gained `request: {text, messageId?, receivedAt}` captured through a new
+`rawMessageText()` — deliberately NOT `messageToContentBlocks()`, which
+rewrites `data` and `raw` parts into summaries and would defeat the purpose.
+
+### 20.20.2 The wake waits, and the brief is not re-sent to say so
+
+P4.3 as designed in §20.14.4: a report is durable first (`inject`, no turn) and
+then arms ONE timer (`wakeCoalesceMs`, default 30 s). When it fires, the
+chatelaine gets a single `[wake] N reports are pending — read them before
+acting.` A burst of ten reports costs one turn, not ten.
+
+The cadence refinement: the full brief is never re-sent on a wake (it never
+was — `briefIfNeeded` runs once per session per `CHATELAINE_BRIEF_VERSION`).
+What a long-lived chatelaine actually loses is the *frame*, so every
+`reminderEvery` wakes (default 20) the wake carries a four-line reminder
+instead: role, node, the tool list, the house-rules path. A question still
+wakes immediately and does not arm the timer — a question is a person waiting.
+
+### 20.20.3 `approve_local_contact`, and the operator lane it opens
+
+`message_local_session` is no longer chatelaine-only. An operator may use it on
+a path the chatelaine approved: `approve_local_contact {operator, session}` in a
+`ContactBook` (`contacts.json`, atomic, 0600, read-time expiry, re-approval
+replaces the row so repeats do not grow the book). Both fields are explicit —
+`session` names the target session id, never a handle, and the tool refuses
+that confusion by name.
+
+This is P4.4, and it closes the last hole in the matrix: an operator can now
+ask a local session a question without becoming a chatelaine, and the
+chatelaine can see and revoke the path. `revoke` removes it; a revoked path is
+refused again immediately.
+
+### 20.20.4 `a2a_send` creates nothing
+
+The chatelaine's send must not pre-create the operator that will handle the
+reply — an operator prepped for a reply that never arrives is a session the
+human has to explain. Verified by test rather than by construction: a send to a
+local fake peer leaves the created-session count unchanged (`created 2 -> 2`).
+The operator for a reply comes into existence when the reply arrives, which is
+also when it has something to be briefed with.
+
+### 20.20.5 The AVD lesson: a warm build owns the whole device
+
+Deploying this round exposed a platform fact worth recording. The mitmproxy
+`uv` warm build (`rustc`/`cargo` for `mitmproxy-rs` and `cryptography`) runs at
+boot and pins every byte of a 2.4 GB emulator: `free` showed 48 MB available,
+swap fully consumed, and `node -e 'console.log(1)'` took **60 s** and timed out.
+The harness then looked "crashed" (port 3080 answered 000) while the build held
+the machine. Two stale `bin.js web` processes were also fighting for 3080, so
+the new one died with `EADDRINUSE` and the plugin tree reported
+`Plugins waiting for services (5): webServer …`.
+
+Rule: on this device, check `free -m` and `top` before believing a boot
+failure, stop the warm build (targeted pids — never a blanket kill) when it is
+not needed, and start the harness directly (`setsid nohup node … bin.js web
+--port 3080 --no-open`) when `termux-wake-lock` blocks the launcher under
+`run-as`. `termux-wake-lock` hangs when the Termux:API app is not answering;
+the launcher's `bash -x` trace stops on that line and the web process never
+starts.
+
+### 20.20.6 Verification
+
+`tests/test-refinements.mjs` — 26 checks, `ALL REFINEMENTS PASS`: verbatim
+original text, prefix lookup, chatelaine-only, unknown task; unapproved →
+approved → delivered → revoked → refused; one coalesced wake for a burst naming
+the backlog; a reminder on that wake and none on the next; a question wakes
+immediately and does not arm the timer; a send creates no local session; the
+brief carries the safety rating and the approved-path rule.
+
+Suite: `npm test` → `fail 0`, plus `ALL SMOKE / AUTHORITY / TOOLS / AUTH / P2 /
+P3-AUTH / P4 CHATELAINE / PRESET MOUNT / PROVENANCE / DIRECTIVES /
+REFINEMENTS PASS`. `test-tools.mjs` now expects eleven registered tools.
+Deployed to both nodes (`index.js a0cd0a8d…`, `chatelaine.js 721d8eb4…`,
+`contacts.js 8afbb18e…`); desktop and AVD both report `briefVersion: 5`. Live
+probe on the AVD: `SendMessage` → `TASK_STATE_COMPLETED`, artifact
+`REFINEMENTS OK`.
