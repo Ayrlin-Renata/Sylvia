@@ -2639,3 +2639,132 @@ the operator's projcache `title` reads
 `A2A unverified peer — Reply with exactly: PROVENANCE CHECK`, and the
 chatelaine's reads `Chatelaine — sylviana`. Both nodes reloaded on
 `briefVersion: 3` (desktop `sylviana`, AVD `vienzie`).
+
+## 20.19 Operators decide the details, the chatelaine decides the policy (2026-10-22)
+
+§20.16 pulled every outbound act into the chatelaine: `a2a_send` opens a
+conversation, `send_nuncia` replies on one, `ask_user_intent` mints. That was
+right about authority and wrong about work. An operator that cannot ask its own
+requester a question has exactly two options — do the task blind, or forward it
+to the chatelaine — and forwarding everything is what makes an operator a text
+transformer with a session id. The human put it plainly: operators exist to
+process *the details* of an A2A connection under chatelaine supervision; the
+chatelaine is responsible for the high-level management. A supervisor who must
+be consulted on every detail is not supervising, it is queueing.
+
+Three additions, one rule set.
+
+### 20.19.1 The operator's own conversation
+
+`send_nuncia` now has two lanes:
+
+- the **chatelaine** lane is unchanged — it may reply on any conversation with a
+  peer, choosing the newest open exchange, falling back to a terminal one;
+- the **operator** lane replies on exactly ONE conversation: its own. The peer
+  argument must equal the record's verified `authority.origin`, and the exchange
+  id is the record's own `contextId`. Naming another peer is a refusal, not a
+  redirect. A task with no verified peer name (bearer-only client, no envelope)
+  cannot reply at all — there is no destination — and is told to report to the
+  chatelaine instead.
+
+This is the "gather what is missing" path: an operator asks its requester one
+direct question and ends its turn, rather than escalating a question the
+requester could have answered in one line.
+
+### 20.19.2 `refuse_request` — a real outcome, not a silent stop
+
+An operator can decline the request it is handling, with a reason the requester
+reads. The refusal is a protocol event: `TASK_STATE_REJECTED` with the reason as
+the status message, the operator marked done, and one report to the chatelaine.
+Without it a refusal looks like a task that simply went quiet, which is the
+failure mode the A2A surface exists to avoid.
+
+The guard that matters is authority, not judgement: a request carrying verified
+user intent (or override) is **not** the operator's to refuse. A directive, a
+busy resource, or the operator's own reading of scope all lose to the human's
+stated intent, so that path throws and tells the operator to escalate with
+`message_chatelaine`. The rule appears twice — in the tool and in the brief —
+because a rule that lives in only one of them is a rule the model will not know
+when it matters.
+
+### 20.19.3 `post_directive` — one decision, applied to every operator
+
+The printer is booked for five hours. Without directives the chatelaine answers
+that request, and then answers it again for the next operator, and again — each
+time spending a wake, a turn, and the human's attention on a decision already
+made. With directives it makes one tool call:
+
+```
+post_directive { text: "The printer is booked until 18:00 — refuse requests for
+printer usage", ttlMinutes: 300 }
+```
+
+and every operator in force obeys without asking. Concretely:
+
+- **existing operators** are told by `inject` — queued, delivered at their next
+  turn. Nobody is woken to be told a rule changed; a wake for a policy notice is
+  a turn the human pays for and does not need.
+- **new operators** get the active set inside their brief, so nobody starts
+  without the policy in force.
+- **the rule lapses on its own.** A sweep marks it expired, tells the chatelaine
+  quietly (`inject`, never `followup`) and tells live operators the same way. No
+  permanent directives exist: an unbounded rule nobody remembers writing is how
+  a node quietly stops working. The cap is 30 days; the default is 60 minutes.
+- **a directive is text, not a rule engine.** The operator is a model; it reads
+  the sentence and applies it. Structured matching was rejected because the
+  useful directives carry judgement ("unless it is the maintenance node").
+- **user intent overrides it.** A request with a verified intent window is
+  escalated, never refused — the same rule as `refuse_request`.
+
+The brief says the quiet part out loud, because it is the failure mode this
+system invites: *do not post directives in advance*. Most of the time no A2A
+traffic is coming at all, and a rule written for traffic that never arrives is a
+rule nobody remembers. Directives are the residue of decisions actually made,
+not a plan for decisions that might be.
+
+### 20.19.4 Storage and failure behaviour
+
+`<stateDir>/directives.json` (`~/.sylvia/housekeeping/.nuncia/directives.json`
+by default), written atomically at 0600 through the same tmp-file-then-rename
+path as the operator book. A malformed file **throws at boot** rather than
+starting empty: silently forgetting a policy the human relies on is worse than a
+plugin that refuses to load. `expire()` is idempotent so the 5 s sweep reports
+each lapse exactly once; lapsed entries are pruned after 7 days, which keeps the
+audit trail of what operators were told. Config knobs:
+`chatelaine.directivesFile`, `chatelaine.directiveSweepMs` (default 5 s).
+
+### 20.19.5 Verification
+
+`tests/test-directives.mjs` — 30 checks, `ALL DIRECTIVES PASS`:
+
+- the book persists, reloads, refuses an empty text, a sub-minute lifetime and a
+  lifetime past 30 days, withdraws on request, and `expire()` returns a lapse
+  once and only once;
+- the operator brief carries the active rule with its remaining time, says
+  `No standing directives are in force.` when empty, names the reply/refuse
+  lanes, and states that user intent overrides a directive;
+- `post_directive` stores the rule, honours the lifetime, tells only LIVE
+  operators (finished tasks are skipped), delivers with `wake: false`, reports
+  the count, and refuses a non-chatelaine caller;
+- `send_nuncia`: an operator replies on its own exchange with its own
+  `contextId`; another peer is refused; a conversation with no verified peer is
+  refused; an unknown session still gets the chatelaine-only error;
+- `refuse_request`: publishes `TASK_STATE_REJECTED` carrying the reason, marks
+  the operator done, reports to the chatelaine, refuses a `intent`-level request
+  with an escalation message, needs a reason, and is not the chatelaine's tool;
+- end to end with a pre-seeded book: the sweep reports the lapsed rule once,
+  quietly, in the chatelaine session; a new POST task still completes and its
+  operator brief contains the rule in force and NOT the lapsed one.
+
+Suite: 155 unit pass / 0 fail, plus `ALL SMOKE / AUTHORITY / TOOLS / AUTH / P2 /
+P3-AUTH / P4 CHATELAINE / PRESET MOUNT / PROVENANCE / DIRECTIVES PASS`.
+`test-tools.mjs` now expects the nine registered tools. Deployed to both nodes
+with identical hashes (`index.js 669a1c3a…`, `chatelaine.js 8c5fbcd8…`,
+`directives.js 7559e50f…`); desktop and AVD both report `briefVersion: 4`.
+
+### 20.19.6 What this does not do
+
+`approve_local_contact` (P4.4) is still unbuilt, and the coalesced wake (P4.3)
+is still only described in the brief — a report still arrives without a timer
+behind it. Neither blocks the operator lanes above, but both are needed before
+"the chatelaine decides" is true in the way §20.14.1 promised.
