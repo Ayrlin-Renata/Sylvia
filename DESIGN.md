@@ -2521,3 +2521,121 @@ reconnaissance"). That is the authority model doing its job on a question the
 operator's preamble had framed as harmless — worth keeping in mind when writing
 probe tasks: the chatelaine checks `operator_authority` before it answers, and
 that is the behaviour we want.
+
+
+## 20.18 The chatelaine should not have to dig (2026-10-22)
+
+The user attached the transcript of the chatelaine answering two operator
+questions and said the right thing: it responded correctly, "but it seems like
+it had to pull a lot of groundwork before it did".
+
+It had. Turn 1 (pre-§20.17) spent 34 steps searching for tools it did not have.
+Turn 3, with the preset mounted, took 16 steps — and 14 of them were work to
+establish *who was asking* and *with what authority*:
+
+| step | what it did | was it needed? |
+| --- | --- | --- |
+| 1 | `operator_authority` on both handles, `read` the house rules | yes — the two facts a decision needs |
+| 2 | `cabinet_show` on `reply_to_operator`, `message_peer_chatelaine`, `send_nuncia` | no — the brief named tools that §20.16 had withdrawn |
+| 3–4 | `git log`, `.nuncia/identity.json`, `chatelaine.json`, `operators.json` | no — identity and the roster are the node's own state |
+| 5 | `Invoke-WebRequest http://127.0.0.1:3080/api/sessions` | no — that endpoint does not exist; it guessed from the GUI URL in its context |
+| 6–7 | listed `.dsh`, the sessions tree, `daemon-p3.log` | no — working out which session was which |
+| 8–15 | read both operator transcripts (four failed `zstdDecompressSync` attempts) | no — the sender's provenance was in the message header, which had no sender in it |
+| 16 | answered both operators with `message_local_session` | yes |
+
+Nothing about that is a model failure. The message it received read:
+
+```
+[message / question / soon] Relaying an A2A request from an unpaired peer …
+```
+
+No sender, no handle, no peer, no authority. Every fact it went looking for was
+known at send time, in the session that sent it.
+
+### 20.18.1 What changed
+
+1. **The notice carries its own provenance.** `message_chatelaine` now writes a
+   header before the caller's text:
+
+   ```
+   [message / question / soon] from operator op_e5591f0c2b779908 (task 54b11d13, session a2a-op-peer-…)
+   peer: unverified · authority: none — no verified user intent
+   ```
+
+   An unbooked local session says `from local session <id>`; an unidentified one
+   says so. A granted exchange says `peer: "vienzie" (paired, W0jttouSyxfHmnzx)
+   · authority: user intent, scope "review the dial plan", ~14 min left`. The
+   chatelaine never has to look any of it up.
+2. **`operator_authority` with no handle IS the roster.** For the chatelaine
+   only, a no-handle call returns every operator task the node knows (handle,
+   task, session, requester, state, live grant) plus the peers it can reach, and
+   renders it readably:
+
+   ```
+   operators (1 active of 1): op_d2da… · 178183d4 · unpaired peer · peer, no grant · active
+   paired peers: vienzie
+   ```
+
+   With a handle it is still the single-window question it has always been, and
+   an operator asking about itself still never sees the roster.
+3. **The brief explains the system instead of the reader having to reverse it**
+   (`CHATELAINE_BRIEF_VERSION = 3`): what an operator session is, that operators
+   cannot send or mint, that the same peer lands in the same operator, that every
+   message opens with a provenance line it can trust, that `operator_authority`
+   *is* the roster, and — explicitly — that `report_to_chatelaine`,
+   `reply_to_operator` and `message_peer_chatelaine` are withdrawn. It also names
+   what a decision may cost: no cabinet edits to obtain tools, no transcripts,
+   no `.nuncia`/transport/netgate logs, no process table, no probing the DSH web
+   API, no walking the house tree or its git history for trust.
+4. **Both sessions are findable in the DSH client.** Operators now work in
+   `<house>/operators` and are attached to a workspace titled **A2A operators**,
+   each session titled `A2A <requester> — <first words of the ask>`; the
+   chatelaine is titled `Chatelaine — <node>`. Before this, operators were
+   attached to the house *root*, whose workspace record is also titled
+   "Housekeeping" — the same title the human's own `F:\Housekeeping` uses, which
+   is why nothing could be found in the client (§20.18.2).
+
+Turn 1 also deserves a line of its own: without file tools, it tried to *give
+itself* tools with `cabinet_config set` and wrote the user's
+`~/.dsh/tool-cabinet.json` (desk list). The resulting desk is functionally the
+one the user already runs, so it was left in place — but that is a session
+editing global harness configuration to route around a missing mount, and the
+brief now forbids it.
+
+### 20.18.2 The duplicate-workspace trap
+
+A workspace record only lists sessions whose `header.cwd` realpath equals the
+record path (`attachSession` enforces it, and `sessionIds` filters on it), so a
+record cannot adopt a session from another directory — not even to tidy up. Two
+consequences worth knowing:
+
+- Sessions created before this change stay in the legacy "Housekeeping" record
+  and cannot be moved; new ones appear under "A2A operators".
+- If the human's own workspace and ours share a title, the client shows two
+  identically named rows and the useful one looks empty. Titles are now
+  distinctive by construction.
+
+### 20.18.3 The rule
+
+**Anything the chatelaine needs in order to decide must arrive inside the
+message, or be exactly one tool call away.** If answering takes three lookups,
+the sender failed to send something — not the chatelaine failing to search. The
+same rule is why the operator brief lists the peer roster: an operator that has
+to discover the node's configuration will spend its turn discovering instead of
+working.
+
+### 20.18.4 Proof
+
+`tests/test-provenance.mjs` (28 checks, `ALL PROVENANCE PASS`) pins the prose:
+the header names operator, task and session; a question keeps the header and
+wakes the chatelaine; a non-operator says `from local session`; the roster
+returns the operator with state and authority, the paired peer with its kid, and
+nothing for a handle-shaped call or an operator caller; the chatelaine still
+cannot message itself.
+
+Live, on the desktop node: `workspace.json` gained
+`A2A operators | C:\Users\ayrlin2\.sylvia\housekeeping\operators | sessions=1`,
+the operator's projcache `title` reads
+`A2A unverified peer — Reply with exactly: PROVENANCE CHECK`, and the
+chatelaine's reads `Chatelaine — sylviana`. Both nodes reloaded on
+`briefVersion: 3` (desktop `sylviana`, AVD `vienzie`).
