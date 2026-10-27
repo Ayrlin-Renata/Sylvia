@@ -136,6 +136,24 @@ export function loadConfig(env = process.env) {
 		scanCidr: env.SYLVIA_SCAN_CIDR || "",
 		scanTimeoutMs: int(env.SYLVIA_SCAN_TIMEOUT_MS, 60 * 1000),
 
+		// --- process ownership (§21) ----------------------------------------
+		// Sylvia owns the processes it depends on, so "two bin.js web fighting
+		// for :3080" becomes a diagnosed conflict instead of a plugin tree that
+		// half-loads. These are the ports the supervisor probes; each one is
+		// also the identity of the service (port + cmdline pattern).
+		mitmPort: int(env.SYLVIA_MITM_PORT, 8080),
+		nineRouterPort: int(env.SYLVIA_9ROUTER_PORT, 20128),
+		sillyTavernPort: int(env.SYLVIA_SILLYTAVERN_PORT, 8000),
+		// The profile patch file the mitmproxy MCP row lives in. The toggle
+		// rewrites this file (comment/uncomment), so it must be the profile the
+		// harness actually boots — SYLVIA_DSH_PROFILE names it, not a path, so
+		// the layout stays DSH's business.
+		dshProfile: env.SYLVIA_DSH_PROFILE || "web",
+		dshHome: env.DSH_HOME || path.join(os.homedir(), ".dsh"),
+		// Boot pass that makes the mitmproxy row agree with the recorded
+		// decision before the harness starts.
+		servicesReconcileOnBoot: bool(env.SYLVIA_SERVICES_RECONCILE_ON_BOOT, true),
+
 		// --- A2A proxy (§20.12 P3.2) ---------------------------------------
 		// Where the nuncia plugin's admin surface lives on this node. The
 		// daemon is a LOOPBACK client, so the plugin's own loopback-only guard

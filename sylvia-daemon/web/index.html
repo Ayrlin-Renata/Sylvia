@@ -48,6 +48,19 @@
 			<dl class="kv" id="health-kv"><dd class="muted">loading…</dd></dl>
 		</div>
 		<div class="card">
+			<h2>Processes</h2>
+			<div id="services-list"><div class="empty">loading…</div></div>
+			<dl class="kv" id="mitm-kv" style="margin-top:12px"><dd class="muted">loading…</dd></dl>
+			<div class="toolbar" style="margin:12px 0 0">
+				<button id="btn-mitm-on">Enable mitmproxy</button>
+				<button id="btn-mitm-off" class="danger">Disable</button>
+			</div>
+			<div class="note">One owner per port: a service whose port is held by something
+			that is not it reads <code>conflict</code>, and the daemon adopts what it finds
+			instead of spawning a second copy. mitmproxy is <b>off by default</b> (§21.1) —
+			enabling registers its MCP server, and the tools appear after a harness restart.</div>
+		</div>
+		<div class="card">
 			<h2>A2A</h2>
 			<dl class="kv" id="a2a-kv"><dd class="muted">loading…</dd></dl>
 			<div id="a2a-grants" style="margin:12px 0 0"><div class="empty">loading…</div></div>
@@ -419,8 +432,71 @@ $("#btn-restart").onclick = async () => {	try {
 	}
 };
 
+// ---- processes + mitmproxy toggle (DESIGN §21) -------------------------------
+// One row per supervised service: what the port says, who owns it, and whether
+// the two disagree (conflict). mitmproxy is the only one with a switch.
+
+async function refreshServices() {
+	let data;
+	try {
+		data = await jget("/api/services");
+	} catch (e) {
+		$("#services-list").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+		return;
+	}
+	const rows = (data.services ?? []).map((s) => {
+		const tone = s.state === "running" ? "ok" : s.state === "conflict" ? "bad" : "neutral";
+		const label = s.state === "conflict" ? "conflict" : s.state;
+		const owner = s.owner ? `${esc(s.owner)}${s.pids?.length ? ` (pid ${s.pids.join(", ")})` : ""}` : "—";
+		return `<tr><td>${esc(s.label)}</td><td>:${s.port}</td><td>${badge(tone, label)}</td><td>${owner}</td></tr>`;
+	}).join("");
+	$("#services-list").innerHTML = rows
+		? `<table class="tbl"><thead><tr><th>Service</th><th>Port</th><th>State</th><th>Owner</th></tr></thead><tbody>${rows}</tbody></table>`
+		: `<div class="empty">no services</div>`;
+}
+
+async function refreshMitm() {
+	let m;
+	try {
+		m = await jget("/api/mitm");
+	} catch (e) {
+		$("#mitm-kv").innerHTML = kv([["mitmproxy", badge("bad", "unavailable")], ["Error", esc(e.message)]]);
+		return;
+	}
+	const state = m.enabled
+		? (m.needsRestart ? badge("warn", "enabled — restart pending") : badge("ok", "enabled"))
+		: (m.active ? badge("warn", "disabled — row still active") : badge("neutral", "off"));
+	$("#mitm-kv").innerHTML = kv([
+		["mitmproxy", state],
+		["Profile row", m.registered ? (m.active ? "active" : "commented out") : "not registered"],
+		["Process", m.listening ? badge("ok", "listening") : badge("neutral", "not running")],
+		["Installed", m.installed ? "yes" : "no (tools will not start)"],
+		["Port", String(m.port ?? 8080)],
+		["Changed", when(m.updatedAt)]
+	]);
+}
+
+$("#btn-mitm-on").onclick = async () => {
+	try {
+		const r = await jpost("/api/mitm/enable");
+		toast(r.ok ? "mitmproxy enabled — restart the harness to load its tools" : "could not enable: no profile row", !r.ok);
+		refreshMitm();
+	} catch (e) {
+		toast(e.message, true);
+	}
+};
+$("#btn-mitm-off").onclick = async () => {
+	try {
+		const r = await jpost("/api/mitm/disable");
+		toast(r.ok ? "mitmproxy disabled (row commented, mitmdump stopped)" : "could not disable: no profile row", !r.ok);
+		refreshMitm();
+	} catch (e) {
+		toast(e.message, true);
+	}
+};
+
 async function refreshAll() {
-	await Promise.all([refreshNetwork(), refreshGate(), refreshHealth(), refreshDsh(), refreshA2A()]);
+	await Promise.all([refreshNetwork(), refreshGate(), refreshHealth(), refreshDsh(), refreshA2A(), refreshServices(), refreshMitm()]);
 }
 refreshAll();
 setInterval(refreshAll, 5000);

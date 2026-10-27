@@ -95,7 +95,7 @@ async function readJsonBody(req, limitBytes = 64 * 1024) {
  * @param {ReturnType<import("./transport.js").createTransport>} [deps.transport]  Shizuku transport ladder (§19)
  * @returns {http.RequestListener}
  */
-export function createApi({ config, netgate, getNetstate, getMeta, registry, modules, discover, harness, transport, a2a }) {
+export function createApi({ config, netgate, getNetstate, getMeta, registry, modules, discover, harness, transport, a2a, services, mitm }) {
 	const serveStatic = makeStaticHandler();
 	// A node without the A2A plugin (or without an admin token) still serves
 	// the panel: the A2A card then says "not configured" instead of the whole
@@ -135,7 +135,79 @@ export function createApi({ config, netgate, getNetstate, getMeta, registry, mod
 				return send(res, 200, await harness.restart());
 			}
 
-			// ---- transport ladder (§19) --------------------------------------
+			// ---- process ownership (§21) --------------------------------------
+			// GET /api/services — who is listening, who owns it, and whether the
+			// port is held by something that is NOT the service it names.
+			if (services) {
+				if (req.method === "GET" && p === "/api/services") {
+					return send(res, 200, { services: await services.list(), stateFile: services.stateFile });
+				}
+				const svcMatch = p.match(/^\/api\/services\/([a-z0-9-]+)\/(ensure|stop)$/);
+				if (req.method === "POST" && svcMatch) {
+					const [, name, action] = svcMatch;
+					try {
+						services.def(name); // 404 rather than a confusing throw
+					} catch (error) {
+						return send(res, 404, { ok: false, error: String(error?.message ?? error) });
+					}
+					if (action === "stop") {
+						// A stopped harness is the panel's business, not the
+						// daemon's: refuse rather than leaving a dead UI.
+						if (name === "harness") {
+							return send(res, 409, { ok: false, error: "the harness is stopped with the Restart button or the launcher, not here" });
+						}
+						return send(res, 200, await services.stop(name));
+					}
+					// ensure = "exactly one is running": adopt, start, or explain.
+					const plan = await services.plan(name);
+					if (plan.action === "conflict") return send(res, 409, { ok: false, action: "conflict", detail: plan.detail });
+					if (plan.action === "adopt") {
+						services.record(name, plan.detail.pids, "adopted");
+						return send(res, 200, { ok: true, action: "adopted", detail: plan.detail });
+					}
+					if (name === "harness" && harness) {
+						const result = await harness.restart();
+						return send(res, result.ok ? 200 : 500, { ...result, action: "restarted" });
+					}
+					// A module that IS this service knows how to start it.
+					if (modules) {
+						const rows = await modules.list();
+						const row = rows.find((entry) => entry.service === name);
+						if (row) {
+							try {
+								const result = await modules.start(row.id);
+								return send(res, 200, { ok: true, action: "started", module: row.id, result });
+							} catch (error) {
+								return send(res, 500, { ok: false, error: String(error?.message ?? error) });
+							}
+						}
+					}
+					return send(res, 501, {
+						ok: false,
+						action: "start",
+						error: `nothing in Sylvia starts ${name} — it is started by its own package (mitmproxy starts with the harness when the toggle is on)`
+					});
+				}
+			}
+
+			// ---- mitmproxy toggle (§21.1) ------------------------------------
+			// Enabled ⇒ the MCP row is uncommented in the profile patch and the
+			// tools appear after a harness restart. Disabled ⇒ the row is
+			// commented AND a live mitmdump is stopped. There is no per-server
+			// `enabled:` in dsh-mcp-client, so the row IS the switch.
+			if (mitm) {
+				if (req.method === "GET" && p === "/api/mitm") {
+					return send(res, 200, await mitm.status());
+				}
+				if (req.method === "POST" && p === "/api/mitm/enable") {
+					return send(res, 200, await mitm.enable());
+				}
+				if (req.method === "POST" && p === "/api/mitm/disable") {
+					return send(res, 200, await mitm.disable());
+				}
+			}
+
+
 			// GET = last persisted state (cheap, no side effects).
 			// POST ensure = one ladder pass: probe → kickstart → adb fallback
 			// (+ teardown of a leftover fallback once Shizuku is healthy).

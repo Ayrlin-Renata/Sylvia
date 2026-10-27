@@ -1243,13 +1243,22 @@ EOF
   fi
 
   # --- mitmproxy-mcp --------------------------------------------------------
+  # The row is wrapped in `# sylvia:mitm-mcp:begin/end` markers (§21.1): the
+  # daemon's toggle comments the whole block out to disable the MCP server and
+  # uncomments it to enable it. dsh-mcp-client has no per-server `enabled:`,
+  # so presence in this file IS the switch. mitmproxy is OFF by default: its
+  # `uv` tool install and the mitmproxy-rs Rust build can starve a small device
+  # of the memory the harness itself needs.
   {
     local mitm_dir="$SYLVIA_HOME/mitmproxy-mcp"
+    local mitm_new=0
+    grep -qE "^[[:space:]]*-[[:space:]]*id:[[:space:]]*mitmproxy-mcp[[:space:]]*$" "$CORDIS_FILE" 2>/dev/null || mitm_new=1
     # Prefer the persistent uv tool (installed by the wheelhouse path): no
     # launch-time dependency resolution at all. Otherwise fall back to uvx,
     # which resolves from the local source dir on each cold start.
     if [ -x "$HOME/.local/bin/mitmproxy-mcp" ]; then
       _cordis_append "mitmproxy-mcp" "$(cat <<EOF
+# sylvia:mitm-mcp:begin
 - id: mitmproxy-mcp
   name: "@deepseek-ai/dsh-mcp-client"
   config:
@@ -1261,10 +1270,12 @@ EOF
       MITMPROXY_AUTO_START: "1"
     cwd: "$mitm_dir"
     toolCallTimeoutMs: 30000
+# sylvia:mitm-mcp:end
 EOF
 )"
     else
       _cordis_append "mitmproxy-mcp" "$(cat <<EOF
+# sylvia:mitm-mcp:begin
 - id: mitmproxy-mcp
   name: "@deepseek-ai/dsh-mcp-client"
   config:
@@ -1279,8 +1290,17 @@ EOF
       MITMPROXY_AUTO_START: "1"
     cwd: "$mitm_dir"
     toolCallTimeoutMs: 30000
+# sylvia:mitm-mcp:end
 EOF
 )"
+    fi
+    # Seed the toggle's decision on a FRESH registration only. An existing
+    # install with no state file keeps whatever shape it already has (the
+    # daemon treats "no decision" as "leave the profile alone").
+    if [ "$mitm_new" = "1" ] && [ ! -f "$SYLVIA_HOME/mitmproxy.json" ]; then
+      printf '{\n  "version": 1,\n  "enabled": false,\n  "updatedAt": null,\n  "appliedAt": null\n}\n' > "$SYLVIA_HOME/mitmproxy.json"
+      chmod 600 "$SYLVIA_HOME/mitmproxy.json" 2>/dev/null || true
+      note "mitmproxy is registered but OFF by default (§21.1) — enable it in the control panel, or let an agent ask for it with the net_diagnostics tool"
     fi
   }
 }

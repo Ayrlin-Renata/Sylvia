@@ -2,6 +2,7 @@
   "id": "9router",
   "name": "9Router",
   "behavior": "manual",
+  "service": "nine-router",
   "frontend": "http://127.0.0.1:20128",
   "settingsSchema": [
     { "key": "port", "type": "port", "label": "Port", "default": 20128 },

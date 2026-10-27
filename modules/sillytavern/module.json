@@ -2,6 +2,7 @@
 	"id": "sillytavern",
 	"name": "SillyTavern",
 	"behavior": "manual",
+	"service": "sillytavern",
 	"frontend": "http://127.0.0.1:8000",
 	"settingsSchema": [
 		{ "key": "port", "type": "port", "label": "Port", "default": 8000 },

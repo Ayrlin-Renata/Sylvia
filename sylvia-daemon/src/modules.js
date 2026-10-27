@@ -45,12 +45,18 @@ function defaultKill(pid, signal) {
 // Validate one module.json. Returns { ok: true, manifest } or { ok: false, error }.
 export function validateManifest(raw, dirName) {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: "module.json is not an object" };
-	const { id, name, behavior, frontend, settingsSchema, backup, scripts } = raw;
+	const { id, name, behavior, frontend, settingsSchema, backup, scripts, service } = raw;
 	if (typeof id !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(id)) return { ok: false, error: `invalid id: ${JSON.stringify(id)}` };
 	if (dirName && id !== dirName) return { ok: false, error: `id "${id}" does not match directory "${dirName}"` };
 	if (typeof name !== "string" || !name) return { ok: false, error: "name is required" };
 	if (!BEHAVIORS.includes(behavior)) return { ok: false, error: `behavior must be one of ${BEHAVIORS.join("|")}` };
 	if (frontend != null && typeof frontend !== "string") return { ok: false, error: "frontend must be a string URL" };
+	// Optional: the supervisor service this module IS (services.js def name).
+	// When set, start() asks the supervisor first and adopts a live process
+	// instead of spawning a second one onto the same port (§21).
+	if (service != null && (typeof service !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(service))) {
+		return { ok: false, error: `service must be a services.js def name, got ${JSON.stringify(service)}` };
+	}
 
 	if (settingsSchema !== undefined) {
 		if (!Array.isArray(settingsSchema)) return { ok: false, error: "settingsSchema must be an array" };
@@ -76,16 +82,19 @@ export function validateManifest(raw, dirName) {
 		}
 	}
 
-	return { ok: true, manifest: { id, name, behavior, frontend: frontend ?? undefined, settingsSchema: settingsSchema ?? [], backup, scripts: scripts ?? {} } };
+	return { ok: true, manifest: { id, name, behavior, frontend: frontend ?? undefined, settingsSchema: settingsSchema ?? [], backup, scripts: scripts ?? {}, service: service ?? undefined } };
 }
 
 export class ModuleManager {
-	constructor({ modulesDir, store, netgate, log, exec = defaultExec, spawnFn = defaultSpawn, killFn = defaultKill, exemptA2A = false }) {
+	constructor({ modulesDir, store, netgate, log, exec = defaultExec, spawnFn = defaultSpawn, killFn = defaultKill, exemptA2A = false, services = null }) {
 		this.modulesDir = modulesDir;
 		this.store = store;
 		this.netgate = netgate;
 		// Whether the A2A module is exempt from the netgate (DESIGN §20.5).
 		this.exemptA2A = exemptA2A === true;
+		// Single-owner supervisor (§21). Optional: a module without a `service`
+		// field keeps the old spawn-and-hope behavior.
+		this.services = services;
 		this.log = log;
 		this.exec = exec;
 		this.spawnFn = spawnFn;
@@ -156,6 +165,8 @@ export class ModuleManager {
 				id,
 				name: mod.manifest.name,
 				behavior: mod.manifest.behavior,
+				// Which supervisor service this module IS (§21), if any.
+				service: mod.manifest.service,
 				frontend: mod.manifest.frontend,
 				settingsSchema: mod.manifest.settingsSchema,
 				settings: saved.settings ?? {},
@@ -188,6 +199,29 @@ export class ModuleManager {
 		if (!rel || mod.missingScripts.includes("on")) throw new Error(`module ${id} has no on script`);
 		const rt = this.runtime.get(id) ?? { pid: null, startedAt: null, lastError: null };
 		if (this._alive(rt.pid)) return { id, running: true, pid: rt.pid, note: "already running" };
+
+		// Ask the supervisor before spawning (§21). Two processes on one port is
+		// the failure this prevents: the second one dies with EADDRINUSE while
+		// the first keeps the port, and the module looks "started" forever.
+		if (this.services && mod.manifest.service) {
+			const plan = await this.services.plan(mod.manifest.service);
+			if (plan.action === "conflict") throw new Error(`module ${id}: ${plan.detail.error}`);
+			if (plan.action === "adopt") {
+				rt.pid = plan.detail.pids[0] ?? null;
+				rt.startedAt = Date.now();
+				rt.lastError = null;
+				this.runtime.set(id, rt);
+				if (mod.manifest.behavior === "always" && this.netgate && rt.pid) {
+					try {
+						this.netgate.register(`module:${id}`, rt.pid, `module ${id} (adopted)`, { exempt: this.exemptA2A === true });
+					} catch (e) {
+						rt.lastError = `netgate register failed: ${e.message}`;
+					}
+				}
+				this.log?.(`module ${id} adopted the live process on port ${plan.detail.port} (pid ${rt.pid}) — not spawning a duplicate`);
+				return { id, running: true, pid: rt.pid, adopted: true, note: "already listening" };
+			}
+		}
 
 		// ensure settings.env exists before the service starts (settings-edit.sh contract)
 		await this._writeEnv(mod);

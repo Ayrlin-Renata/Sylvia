@@ -2868,3 +2868,130 @@ Deployed to both nodes (`index.js a0cd0a8d…`, `chatelaine.js 721d8eb4…`,
 `contacts.js 8afbb18e…`); desktop and AVD both report `briefVersion: 5`. Live
 probe on the AVD: `SendMessage` → `TASK_STATE_COMPLETED`, artifact
 `REFINEMENTS OK`.
+
+## 21 Process ownership and the mitmproxy toggle (2026-10-23)
+
+Two complaints, one cause. The AVD had been found running *two* `bin.js web`
+processes with a third dead one holding nothing, and the harness itself was
+observed answering `000` on `:3080` while 51 MB of free memory remained —
+because the mitmproxy `uv` tool install and its Rust rebuild were running at
+boot, competing with the harness for the same scarce memory. Neither is a
+crash; both are ownership bugs. Nothing in Sylvia said "this port has one
+owner, and here is who it is", and nothing let the operator say "mitmproxy is
+off until I need it".
+
+### 21.1 mitmproxy is a toggle, not a boot dependency
+
+`dsh-mcp-client` has no per-server `enabled:` field (checked in
+`dsh-mcp-client/lib/index.js`: the only `enabled` is
+`RECONNECT_DEFAULTS.enabled`, a reconnect policy). Presence in the profile's
+`cordis.patch.yml` **is** the switch, so the installer now wraps the
+`mitmproxy-mcp` row in marker comments:
+
+```yaml
+# sylvia:mitm-mcp:begin
+- id: mitmproxy-mcp
+  name: "@deepseek-ai/dsh-mcp-client"
+  ...
+# sylvia:mitm-mcp:end
+```
+
+`src/mitm.js` owns that block: `renderBlock()` comments or uncomments every
+line inside the markers (the `# ` goes *before* the indentation, so the block
+stays aligned), and a legacy unmarked row is wrapped in place the first time
+the toggle runs — existing installs do not need the installer to have been
+re-run. The decision lives in `<stateDir>/mitmproxy.json`:
+
+```json
+{ "version": 1, "enabled": false, "updatedAt": null, "appliedAt": null }
+```
+
+`needsRestart` is derived, not stored: the file disagrees with the decision, or
+`updatedAt !== appliedAt` (the decision changed but the harness has not booted
+since). `ensureAtBoot()` runs once, before the harness is (re)started: with no
+decision at all it leaves the profile alone — that is what keeps an existing
+install working exactly as before — otherwise it makes the file agree with the
+decision and stops a running `mitmdump` when the answer is "off".
+
+The installer seeds `{enabled: false}` only for a **fresh** registration, and
+says so: `mitmproxy is registered but OFF by default (§21.1)`. The reason is
+the memory finding above; a 2.4 GB device should not pay a Rust rebuild it did
+not ask for.
+
+### 21.2 An agent may ask for diagnostics, but not silently believe it got them
+
+`sylvia-bridge` exposes the switch to the model as `net_diagnostics`
+(`lib/diagnostics.js`, `{action: status|enable|disable, note?}`), which talks to
+the daemon over loopback (`GET /api/mitm`, `POST /api/mitm/{enable,disable}`).
+The tool never restarts the harness — a restart from inside a turn would kill
+the session that asked — so when the decision and the running harness disagree
+it returns `needsRestart: true` and the rendered text says, in the agent's own
+tool result:
+
+> It is NOT in force yet: the MCP tools appear only after the harness restarts,
+> and a restart ends this session. Ask the human to restart the harness…
+
+An unreachable daemon is a plain `{ok: false, reason}` — never a thrown turn
+failure. The point is that the agent learns the truth instead of concluding
+"diagnostics are broken" or, worse, that it has tools it does not have.
+
+### 21.3 One owner per port
+
+`src/services.js` is the supervisor. A service is `(name, port, cmdline
+pattern)`; the port probe is the truth and `<stateDir>/services.json` only
+explains who put it there.
+
+| service | port | pattern |
+| --- | --- | --- |
+| harness | `SYLVIA_WEB_PORT` (3080) | `bin.js web` |
+| mitm | `SYLVIA_MITM_PORT` (8080) | `mitmdump` |
+| nine-router | `SYLVIA_9ROUTER_PORT` (20128) | `9router` |
+| sillytavern | `SYLVIA_SILLYTAVERN_PORT` (8000) | `sillytavern` |
+| daemon | `SYLVIA_DAEMON_PORT` (3090) | `sylvia-daemon/index.js` |
+
+`inspect()` classifies: `running` (port answered, owner pids match),
+`stopped`, `starting` (tracked pid alive, port not up yet), `dead` (tracked pid
+gone), and `conflict` — **the case the user hit**: the port is held but no
+process matches the pattern. `conflict` is reported, never "fixed" by killing a
+stranger.
+
+Every starter asks first. `ModuleManager.start(id)` consults
+`services.plan(service)` and, on `adopt`, records the live pid and returns
+`{running: true, adopted: true}` instead of spawning a duplicate — so a module
+started from the panel while the process is already up through another path
+cannot produce the second copy. `harness.restart()` refuses outright when the
+port is held by something that is not the harness, and records the pid it did
+spawn.
+
+`reconcile()` runs at boot: it adopts live processes it did not start (so a
+`services.json` that predates a restart is corrected, not trusted) and forgets
+pids that are gone. `stop(name)` kills by exact pid — never a blanket kill; the
+daemon, the harness and the A2A plugin are all `node`, which is exactly why a
+pattern-and-pid design is required here.
+
+### 21.4 Surfaces
+
+- Panel: a **Processes** card (service table with state/owner/port and a
+  `conflict` badge, plus the mitmproxy state and its Enable/Disable buttons).
+- API: `GET /api/services`, `POST /api/services/:name/ensure|stop`,
+  `GET /api/mitm`, `POST /api/mitm/enable|disable`. `stop` refuses for the
+  harness (409) — the panel's Restart button and the launcher own that.
+- Agent: `net_diagnostics` (above).
+
+`ensure` on a service with no known starter returns 501 with the reason
+("nothing in this build knows how to start it"), rather than pretending.
+
+### 21.5 Tests
+
+`sylvia-daemon/test/services.test.mjs` (9) and `test/mitm.test.mjs` (13) cover
+classification, adoption, conflict detection, stop-by-pid, marker rendering
+(including the legacy-row wrap and marker-only edits not counting as changes),
+enable/disable round-trips, and `ensureAtBoot`'s three cases (no decision,
+enabled, disabled). `sylvia-bridge/test/diagnostics.test.mjs` (9) covers the
+tool: status/enable/disable, the `needsRestart` wording, an unreachable daemon,
+a daemon-side refusal keeping its reason, and a profile with no row.
+
+Daemon `175/175`, bridge `47/47`. One real bug was caught by these tests and
+fixed: the tool's `render` had the wrong arity — the harness calls
+`render(args, value)`, so a value-first renderer always rendered
+`net_diagnostics: failed` while the data underneath was correct.

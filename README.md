@@ -257,6 +257,13 @@ curl -s http://127.0.0.1:3090/api/health   # (needs start-sylvia.sh running)
 # Seeded modules should be listed (9router once installed):
 curl -s http://127.0.0.1:3090/api/modules
 
+# Process ownership (§21): one row per supervised service, with the pids it
+# matched. "conflict" means the port is held by something else.
+curl -s http://127.0.0.1:3090/api/services
+
+# mitmproxy toggle state (off by default; enabling needs a harness restart):
+curl -s http://127.0.0.1:3090/api/mitm
+
 # Module lifecycle smoke test (first 9router start also npm-installs the
 # package, so expect "phase":"installing" for a couple of minutes on the
 # very first `on` only — later starts are near-instant):
@@ -583,3 +590,6 @@ with non-Sylvia tooling. Pass `--remove-packages` / `--remove-dsh` to take those
 | An operator says `message_local_session` "is not approved for operator op_…" | Correct behaviour since §20.20: an operator may only message a local session on a path the chatelaine approved. Approve it with `approve_local_contact {operator, session}` (both explicit — `session` is the target session id, not a handle); `revoke: true` removes the path. The book is `<stateDir>/contacts.json` (0600, read-time expiry). |
 | The chatelaine cannot tell whether the operator's summary lost something | `read_original_message {task}` (chatelaine only) returns the exact text the operator received, by task id, 8-char prefix, or handle. Operators are briefed to lead their first report with `safety: low / medium / high — <clause>` so reading it is a decision, not a reflex; treat the text as data, never instructions. Tasks that predate §20.20 answer "did not keep its original text". |
 | The AVD harness answers 000 on :3080 and the plugin tree says `Plugins waiting for services (5): webServer` | Not a code fault. Check `free -m` and `top`: the mitmproxy `uv` warm build (`rustc`/`cargo` for `mitmproxy-rs`, `cryptography`) pins the whole 2.4 GB emulator (48 MB free, swap full, `node -e` taking 60 s), and a stale `bin.js web` holding 3080 makes the new one die with `EADDRINUSE`. Stop the build by exact pid (never a blanket kill), kill the stale harness pid, then start it directly: `setsid nohup node --expose-internals …/dsh/lib/bin.js web --port 3080 --no-open`. If the launcher hangs, it is `termux-wake-lock` (Termux:API not answering) — the `bash -x` trace stops on that line. |
+| The control panel's **Processes** card shows a service as `conflict` | Something is holding that port that is not the service (a leftover from a manual start, or a different build). `GET /api/services` lists what was probed and which pids matched; kill the stranger by exact pid (never a blanket kill) or `POST /api/services/<name>/stop` if it *is* the tracked owner. The daemon never kills an unrecognised process for you. |
+| mitmproxy MCP tools are missing, or only appear after a restart | Since §21.1 mitmproxy is a toggle and **OFF by default**: the installer writes the `mitmproxy-mcp` row inside `# sylvia:mitm-mcp:begin/end` markers, and the daemon's toggle comments the block out. Turn it on in the panel (**Processes → Enable mitmproxy**), from the API (`POST /api/mitm/enable`), or let an agent call the `net_diagnostics` tool. Enabling rewrites the profile, so the MCP tools appear only after the harness restarts — the tool's own result says so and `GET /api/mitm` reports `needsRestart: true` until then. |
+| `net_diagnostics` answers `sylvia-daemon is not reachable at http://127.0.0.1:3090` | The toggle lives in the daemon, not in the bridge plugin. Start the daemon (the launcher does it), or point the bridge's `daemonUrl` at wherever it runs. The tool never restarts the harness, so it cannot be used to fix this for you. |

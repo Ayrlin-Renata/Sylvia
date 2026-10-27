@@ -17,6 +17,8 @@ import { createDiscoverer } from "./src/discover.js";
 import { createHarnessControl } from "./src/harness.js";
 import { createTransport } from "./src/transport.js";
 import { createA2AProxy } from "./src/a2aproxy.js";
+import { createServices } from "./src/services.js";
+import { createMitmToggle } from "./src/mitm.js";
 import { defaultAuditPath, loadDaemonSecrets } from "./src/secrets.js";
 import path from "node:path";
 
@@ -60,12 +62,18 @@ export async function main(env = process.env) {
 		}).catch((e) => log("prune failed:", String(e)));
 	}, config.pruneIntervalMs).unref();
 
+	// Process ownership (§21). Created BEFORE the module manager so a module
+	// can ask "is this port already mine?" instead of spawning a duplicate.
+	const services = createServices({ config, logger: { info: log, warn: log } });
+	const mitm = createMitmToggle({ config, services, logger: { info: log, warn: log } });
+
 	// Module manager (§9) — local services formalized as modules.
 	const modules = new ModuleManager({
 		modulesDir: path.join(config.stateDir, "modules"),
 		store,
 		netgate,
 		log,
+		services,
 		// The A2A listener keeps serving while the gate is held when the node
 		// opts in (DESIGN §20.5). Off by default: fail-closed.
 		exemptA2A: config.a2aExemptFromGate === true
@@ -73,6 +81,30 @@ export async function main(env = process.env) {
 	const { found, errors } = await modules.discover();
 	for (const err of errors) log("module error:", err);
 	if (found) log(`discovered ${found} module${found === 1 ? "" : "s"}`);
+
+	// Boot reconcile (§21): adopt whatever is already running and forget what is
+	// dead. A daemon restart must still be able to STOP the harness/mitmdump it
+	// started last time, which means it has to know about processes it did not
+	// spawn in this pass.
+	if (config.servicesReconcileOnBoot) {
+		const seen = await services.reconcile().catch((error) => {
+			log("services: reconcile failed:", String(error?.message ?? error));
+			return [];
+		});
+		for (const svc of seen) {
+			if (svc.adopted) log(`services: adopted ${svc.label} on :${svc.port} (pid ${svc.pids.join(", ")})`);
+			else if (svc.state === "conflict") log(`services: WARNING port ${svc.port} is held by a process that does not look like ${svc.label}`);
+		}
+	}
+
+	// mitmproxy is OPT-IN (§21.1): make the profile row agree with the stored
+	// decision before the harness reads it, so "off" is off at boot and not
+	// "off after the next restart".
+	const mitmBoot = await mitm.ensureAtBoot().catch((error) => ({ error: String(error?.message ?? error) }));
+	if (mitmBoot.error) log(`mitm: boot pass failed: ${mitmBoot.error}`);
+	else if (mitmBoot.skipped) log(`mitm: ${mitmBoot.skipped} — leaving the profile as installed`);
+	else if (mitmBoot.needsRestart) log(`mitm: ${mitmBoot.enabled ? "enabled" : "disabled"} — restart the harness to apply`);
+
 	await modules.autoStart();
 	// Auto-restart pass for behavior=always modules (§9.4).
 	const restartTimer = setInterval(() => {
@@ -111,7 +143,9 @@ export async function main(env = process.env) {
 		registry,
 		modules,
 		discover: createDiscoverer(config, registry, async () => watcher.getLastState() ?? (await watcher.tick(), watcher.getLastState())),
-		harness: createHarnessControl({ config }),
+		harness: createHarnessControl({ config, services }),
+		services,
+		mitm,
 		transport,
 		a2a,
 		getNetstate: async () => watcher.getLastState() ?? (await watcher.tick(), watcher.getLastState()),

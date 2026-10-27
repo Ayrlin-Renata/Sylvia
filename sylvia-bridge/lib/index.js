@@ -17,6 +17,7 @@ import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm';
 import { createBridgeCore, DEFAULT_CONFIG } from './core.js';
 import { sampleNetwork } from './sample.js';
 import { forwardSecurityEvent, normalizeSecurityEvent } from './security-event.js';
+import { registerNetDiagnosticsTool } from './diagnostics.js';
 
 export const name = 'sylvia-bridge';
 
@@ -168,6 +169,12 @@ export function apply(ctx, config) {
       return disposer;
     }, 'sylvia-bridge:mobile-css');
   });
+
+  // mitmproxy toggle (§21.1): the agent-facing side of the daemon's switch.
+  // An agent that needs traffic-level diagnostics can turn the proxy on, but
+  // the MCP tools only exist after a harness restart — the tool says so rather
+  // than pretending. Never restarts anything from inside a turn.
+  registerNetDiagnosticsTool(ctx, cfg);
 
   // Expose for debugging / future control-panel probes.
   ctx.provide?.('sylviaBridge', core.getState);

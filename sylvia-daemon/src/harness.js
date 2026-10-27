@@ -29,7 +29,8 @@ export function createHarnessControl({
 	spawnFn = spawn,
 	execFileFn = (cmd, args, opts, cb) => execFile(cmd, args, opts, cb),
 	killFn = (pid, sig) => process.kill(pid, sig),
-	sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+	sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+	services = null
 } = {}) {
 	function pids() {
 		return new Promise((resolve) => {
@@ -80,6 +81,13 @@ export function createHarnessControl({
 		if (survivors.length > 0) {
 			return { ok: false, error: `harness process(es) still alive after SIGKILL: ${survivors.join(", ")}`, killed };
 		}
+		// The port is the real claim on the name. If no `bin.js web` pid holds it
+		// yet something is listening, spawning would only add a process that
+		// dies with EADDRINUSE — refuse and say who is squatting (§21).
+		if (services) {
+			const plan = await services.plan("harness").catch(() => null);
+			if (plan?.action === "conflict") return { ok: false, error: plan.detail.error, killed };
+		}
 
 		const logPath = path.join(config.stateDir, "dsh-web.log");
 		fs.closeSync(fs.openSync(logPath, "w")); // truncate: next token is the only token
@@ -96,6 +104,13 @@ export function createHarnessControl({
 		try {
 			const child = spawnFn(process.execPath, args, { env, stdio: ["ignore", fd, fd], detached: true });
 			if (child && typeof child.unref === "function") child.unref();
+			if (services && child?.pid) {
+				try {
+					services.record("harness", [child.pid]);
+				} catch {
+					// ownership memory is advisory
+				}
+			}
 			return { ok: true, killed, stragglers, pid: child?.pid ?? null, log: logPath };
 		} finally {
 			try {
@@ -106,5 +121,5 @@ export function createHarnessControl({
 		}
 	}
 
-	return { restart };
+	return { restart, pids };
 }
