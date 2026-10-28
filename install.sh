@@ -1444,6 +1444,166 @@ BUNDLES_EOF
 }
 
 # =============================================================================
+#  MODULE 6.5 — deploy dsh-nuncia into the profile (single source of truth)
+# =============================================================================
+# The plugin is PLAIN ESM, not an npm package, so cordis has to be able to
+# resolve the bare name `dsh-nuncia` from the profile. It ALSO has to resolve
+# its ambient peers (`schemastery`, `@deepseek-ai/dsh-llm`, `dsh-session`) and
+# its own deps (@a2a-js/sdk), which live in node_modules beside the source.
+#
+# That second requirement decides the topology: the profile must reach the
+# SOURCE TREE, because a bare copy of lib/ has no node_modules and dies with
+# "Cannot find package 'schemastery'". So the symlink is not a stylistic choice
+# — it is the only deployment that works, and what a copy does instead is
+# produce a build that resolves right up until it imports its first peer.
+#
+#   (a) SYMLINK — node_modules/dsh-nuncia -> $SYLVIA_HOME/dsh-nuncia. Correct:
+#       the source tree IS the live code and brings its node_modules with it.
+#       (The profile's package.json usually also carries
+#       `"dsh-nuncia": "file:<abs path>"`.)
+#   (b) COPY — a real directory. Tolerated for backwards compatibility with
+#       hand-deployed hosts, refreshed from the source, and then TOLD PLAINLY
+#       that it cannot resolve ambient peers. Silently leaving a copy in place
+#       is what produced the "stale build, no mount, missing routes" class of
+#       bug this module exists to prevent.
+#
+# Verify whichever topology is present, and never report success on a topology
+# we did not actually confirm.
+module_nuncia_plugin() {
+  CURRENT_MODULE="nuncia plugin"
+  local src="$SYLVIA_HOME/dsh-nuncia"
+  local profile="${DSH_HOME:-$HOME/.dsh}/profiles/web"
+  local dest="$profile/node_modules/dsh-nuncia"
+
+  if [ ! -f "$src/lib/index.js" ]; then
+    note "dsh-nuncia source not present at $src — skipping (install it from the Sylvia repo to enable A2A)"
+    return 0
+  fi
+
+  ensure_dir "$profile/node_modules"
+
+  if [ -L "$dest" ]; then
+    # Topology (a): the profile points at the source tree. Verify the target is
+    # the source (a symlink to somewhere else is a real misconfiguration), then
+    # there is nothing to copy — the source is live by definition.
+    local target; target="$(readlink -f "$dest" 2>/dev/null || true)"
+    local want; want="$(readlink -f "$src" 2>/dev/null || true)"
+    if [ "$target" = "$want" ]; then
+      skip "dsh-nuncia is symlinked to the source tree (nothing to copy)"
+    else
+      warn "dsh-nuncia is a symlink to $target, not to $src — repointing it at the source tree"
+      ln -sfn "$src" "$dest" || die "could not repoint $dest at $src"
+      ok "dsh-nuncia symlink repointed at the source tree"
+    fi
+  else
+    # Topology (b): a real directory. Refresh it so it at least matches the
+    # source, then say what it cannot do. bin/ is needed on-device so
+    # `nuncia-secrets`/`nuncia-token`/`nuncia-identity` work from the shell.
+    # cordis.patch.yml is DELIBERATELY excluded: it is a commented template for
+    # humans, never read by the plugin (the live config is the profile's own
+    # file), and nodes legitimately trim it, so copying it would churn forever.
+    if [ -d "$dest" ]; then
+      warn "dsh-nuncia is a real DIRECTORY, not a symlink to the source tree"
+      note "a copy cannot resolve the plugin's ambient peers (schemastery, @deepseek-ai/dsh-llm, …) — run: ln -sfn $src $dest"
+    fi
+    local parts=(lib bin package.json README.md)
+    local p changed=0
+
+    for p in "${parts[@]}"; do
+      [ -e "$src/$p" ] || continue
+      # `diff -rq A B` where B is absent prints a difference and exits 1, which
+      # looks exactly like "needs a copy" — so test for B first and copy in both
+      # cases. A directory copy replaces the whole subtree, so removals on the
+      # source side take effect too.
+      if [ ! -e "$dest/$p" ] || ! diff -rq "$src/$p" "$dest/$p" >/dev/null 2>&1; then
+        rm -rf "$dest/$p"
+        cp -R "$src/$p" "$dest/$p" || die "could not copy $p into $dest"
+        # Verify the copy landed: a partial copy that exits 0 leaves a tree that
+        # still differs, and reporting success there is the exact silent failure
+        # this module exists to prevent.
+        if [ -d "$src/$p" ] && ! diff -rq "$src/$p" "$dest/$p" >/dev/null 2>&1; then
+          die "copied $p into $dest but the trees still differ — the profile copy is broken"
+        fi
+        changed=1
+      fi
+    done
+    if [ "$changed" -eq 1 ]; then
+      ok "deployed dsh-nuncia into the profile (source updated)"
+    else
+      skip "dsh-nuncia profile copy already matches the source"
+    fi
+  fi
+
+  # Prove the deployed build can actually be imported, and that it carries the
+  # mount switch this installer expects. A copy that cannot import makes boot
+  # fail loudly, so catching it here turns a broken boot into a clear message.
+  #
+  # `await import("dsh-nuncia")` must resolve from the PROFILE, and it must load
+  # the code the profile is actually wired to. With the symlink topology that
+  # resolves THROUGH to the source tree, which is correct and must not be
+  # reported as a failure — so accept either the profile path or the source
+  # path, and reject only a resolution that is neither.
+  local probe
+  probe="$(cd "$profile" && DSH_NUNCIA_DEST="$dest" DSH_NUNCIA_SRC="$src" node --input-type=module -e '
+    try {
+      const m = await import("dsh-nuncia");
+      const fs = await import("node:fs");
+      const { createRequire } = await import("node:module");
+      const req = createRequire(process.cwd() + "/package.json");
+      let resolved = "";
+      try { resolved = req.resolve("dsh-nuncia"); } catch { resolved = ""; }
+      const dest = process.env.DSH_NUNCIA_DEST || "";
+      const src = process.env.DSH_NUNCIA_SRC || "";
+      const norm = (p) => p.replace(/\\/g, "/");
+      if (!resolved) {
+        console.log("IMPORT_FAIL dsh-nuncia does not resolve from the profile");
+      } else if (dest && src && !norm(resolved).startsWith(norm(dest)) && !norm(resolved).startsWith(norm(src))) {
+        console.log("IMPORT_FAIL resolved to " + resolved + " (neither the profile copy nor the source tree)");
+      } else {
+        // Force the whole module graph to load: dynamic import() of the entry
+        // alone does not necessarily pull every sibling, so read the entry that
+        // was resolved and import each relative dependency explicitly. A tree
+        // missing a file fails HERE rather than halfway through boot.
+        // Match BOTH quote styles. Two traps here: this codebase imports with
+        // single quotes (a double-quote-only pattern finds nothing and the
+        // check passes vacuously), and a literal quote character cannot be
+        // written inside this single-quoted shell string — the class is built
+        // from char codes instead.
+        const q = String.fromCharCode(39) + String.fromCharCode(34);
+        const root = norm(resolved).replace(/\/lib\/index\.js$/, "");
+        const entry = fs.readFileSync(root + "/lib/index.js", "utf8");
+        const re = new RegExp("from\\s+[" + q + "](\\.[^" + q + "]+)[" + q + "]", "g");
+        const deps = [...entry.matchAll(re)].map((x) => x[1]);
+        if (!deps.length) {
+          console.log("IMPORT_FAIL no relative imports found in " + root + "/lib/index.js — the probe is not checking anything");
+        } else {
+          for (const d of deps) await import("file://" + root + "/lib/" + d.slice(2));
+          const mounts = (entry.match(/config\.mount/g) || []).length;
+          const where = dest && norm(resolved).startsWith(norm(dest)) ? "profile copy" : "source tree (symlinked)";
+          console.log("IMPORT_OK name=" + m.name + " via=" + where + " deps=" + deps.length + " mount_refs=" + mounts);
+        }
+      }
+    } catch (error) {
+      console.log("IMPORT_FAIL " + (error && error.message));
+    }
+  ' 2>&1)" || probe="IMPORT_FAIL probe crashed"
+  case "$probe" in
+    IMPORT_OK*)
+      ok "dsh-nuncia imports from the profile ($probe)"
+      # The advertised A2A endpoint is only real if the plugin binds it. When
+      # the profile asks for its own listener, say so plainly so a missing
+      # port later is diagnosed as "not running", not "silently stubbed".
+      if grep -qE "^[[:space:]]*mount:[[:space:]]*standalone" "$CORDIS_FILE" 2>/dev/null; then
+        local a2a_port
+        a2a_port="$(grep -oE "^[[:space:]]*port:[[:space:]]*[0-9]+" "$CORDIS_FILE" | head -n1 | grep -oE "[0-9]+" || true)"
+        note "profile requests mount=standalone${a2a_port:+ on port $a2a_port} — that listener starts with the harness, not with this installer"
+      fi
+      ;;
+    *) warn "dsh-nuncia does not import from the profile — $probe" ;;
+  esac
+}
+
+# =============================================================================
 #  MODULE 7 — launchers + env file
 # =============================================================================
 module_launchers() {
@@ -2366,6 +2526,7 @@ module_tasker_mcp
 module_mitm_mcp
 module_register_mcp
 module_default_plugins
+module_nuncia_plugin
 module_launchers
 module_termux_boot
 module_adb_connect
