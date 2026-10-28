@@ -3087,3 +3087,18 @@ The lesson worth keeping: an "environment or vault" resolution order is
 wrong for a process that can be started by hand — the durable location, not
 the convenient one, has to be in the chain. Daemon suite 182/182.
 
+**A node that never decided is not owed a restart.** The same verification
+pass caught the toggle nagging: the AVD carries the *legacy* shape (an
+unwrapped `- id: mitmproxy-mcp` row, active, no decision file) and
+`/api/mitm` reported `needsRestart: true`. `findBlock()` locates a legacy row
+by shape, so `found` was not null and the comparison collapsed to
+`active(true) !== decided(false)` — a demand to restart a switch nobody had
+ever touched, which contradicted `ensureAtBoot()`, whose documented job is to
+leave a never-decided node exactly as installed. `needsRestart` now requires
+`decided` first: only a decision can be owed a restart. The existing test had
+asserted `decided`/`active`/`registered` on precisely this path but never
+`needsRestart`, which is how the bug slipped through; it now asserts false,
+and a new test pins the legacy-unwrapped-row shape end to end. Verified
+on-device: `needsRestart false`, five services, zero conflicts. Suite
+183/183.
+
