@@ -104,6 +104,22 @@ test("applyToggle: no mitmproxy row → reports not found and does not touch the
 	assert.equal(result.text, text);
 });
 
+test("status: a legacy unwrapped row with no decision owes no restart", async (t) => {
+	// The AVD's real shape: the installer predated the markers, so the row is
+	// present, unwrapped and ACTIVE, and no decision file exists. findBlock
+	// still finds it (by row shape), which made the old comparison read
+	// `active(true) !== decided(false)` and demand a restart for a switch
+	// nobody ever touched.
+	const { dir, profile } = tmp(t);
+	const toggle = createMitmToggle({ config: { stateDir: dir, mitmPort: 8080 }, profileFile: profile });
+
+	const s = await toggle.status();
+	assert.equal(s.registered, true, "the legacy row is found by shape");
+	assert.equal(s.active, true, "and it is active as installed");
+	assert.equal(s.decided, false, "but nothing was ever decided");
+	assert.equal(s.needsRestart, false, "so the toggle must not demand a restart");
+});
+
 test("toggle: enable/disable rewrite the profile and record the decision", async (t) => {
 	const { dir, profile } = tmp(t);
 	const stopped = [];
@@ -114,6 +130,11 @@ test("toggle: enable/disable rewrite the profile and record the decision", async
 	assert.equal(initial.decided, false, "no decision yet");
 	assert.equal(initial.active, true, "the file is active as installed");
 	assert.equal(initial.registered, true);
+	assert.equal(
+		initial.needsRestart,
+		false,
+		"a node that never chose must not be nagged: ensureAtBoot leaves it as installed, so nothing is owed"
+	);
 
 	const on = await toggle.enable();
 	assert.equal(on.ok, true);

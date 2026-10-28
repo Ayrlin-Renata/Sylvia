@@ -205,9 +205,10 @@ export function createMitmToggle({ config, services, logger, profileFile } = {})
 		const running = services ? await services.inspect("mitm") : null;
 		const active = found === null ? false : !found.commented;
 		const installed = fs.existsSync(path.join(os.homedir(), ".local", "bin", "mitmdump"));
+		const decided = state.enabled !== null;
 		return {
 			enabled: state.enabled === true,
-			decided: state.enabled !== null,
+			decided,
 			updatedAt: state.updatedAt,
 			appliedAt: state.appliedAt,
 			registered: found !== null,
@@ -217,10 +218,18 @@ export function createMitmToggle({ config, services, logger, profileFile } = {})
 			listening: running?.listening ?? false,
 			pids: running?.pids ?? [],
 			profile: patchFile,
-			// The file and the DECISION disagree → nothing is right yet.
-			// The file and the decision agree, but the harness has not read it
-			// since the change → the running plugin tree is stale.
-			needsRestart: found !== null
+			// Only a DECISION can be owed a restart. A node that never chose
+			// (an install predating the toggle) keeps whatever shape the file
+			// already has — ensureAtBoot() deliberately leaves it alone, so
+			// reporting "restart me" there would nag about a switch nobody
+			// touched. The AVD hit exactly this: a legacy unwrapped row, no
+			// decision file, and a toggle demanding a restart.
+			//
+			// Once a decision exists, the file and the decision disagreeing
+			// means nothing is right yet; agreeing but not yet applied means
+			// the running plugin tree is stale.
+			needsRestart: decided
+				&& found !== null
 				&& (active !== (state.enabled === true)
 					|| (state.updatedAt !== null && state.appliedAt !== state.updatedAt))
 		};
