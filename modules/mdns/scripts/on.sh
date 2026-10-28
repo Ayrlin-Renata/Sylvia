@@ -3,6 +3,15 @@
 # netgate can SIGSTOP/SIGCONT it. This broadcasts on the local network — one of
 # the primary "managed traffic" services. On Termux avahi may not be present;
 # this uses a lightweight responder or the system daemon if available.
+#
+# The script must EXIT NON-ZERO whenever it did not start a responder: the
+# module manager treats "on" as authoritative and remembers lastDesired=on,
+# so a silent success keeps it re-running every boot while nothing is up.
+# Nothing here may touch the filesystem: under `run-as com.termux` the shell's
+# temp directory (/data/local) is NOT writable, and mksh's heredoc fallback
+# fails with "can't create temporary file ..." — which used to turn this
+# failure path into a fake exit 0.
+set -u
 IFACE="${SYLVIA_MODULE_INTERFACE:-}"
 if command -v avahi-daemon >/dev/null 2>&1; then
 	setsid avahi-daemon --daemonize --no-drop-root </dev/null >/dev/null 2>&1 &
@@ -17,12 +26,12 @@ else
 	# Termux as written — and being classified `always` made the daemon restart
 	# it forever (death streak 7, exponential backoff: an "always on" service
 	# that is never on). It is `manual` for exactly that reason.
-	cat >&2 <<'MSG'
-mdns: no responder available.
-  Android ships neither an avahi-daemon nor an mdnsd CLI — mDNS there is the
-  framework's Network Service Discovery, not a daemon. Starting this module
-  will always fail; it is `manual` so the daemon does not churn on it.
-  If you need mDNS, run your own userspace responder.
-MSG
+	#
+	# Plain sequence of echos rather than a heredoc: see the header.
+	echo "mdns: no responder available." >&2
+	echo "  Android ships neither an avahi-daemon nor an mdnsd CLI — mDNS there is the" >&2
+	echo "  framework's Network Service Discovery, not a daemon. Starting this module" >&2
+	echo "  will always fail; it is \`manual\` so the daemon does not churn on it." >&2
+	echo "  If you need mDNS, run your own userspace responder." >&2
 	exit 2
 fi

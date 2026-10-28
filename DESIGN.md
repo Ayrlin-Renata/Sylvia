@@ -2983,7 +2983,7 @@ pattern-and-pid design is required here.
 
 ### 21.5 Tests
 
-`sylvia-daemon/test/services.test.mjs` (9) and `test/mitm.test.mjs` (13) cover
+`sylvia-daemon/test/services.test.mjs` (11) and `test/mitm.test.mjs` (13) cover
 classification, adoption, conflict detection, stop-by-pid, marker rendering
 (including the legacy-row wrap and marker-only edits not counting as changes),
 enable/disable round-trips, and `ensureAtBoot`'s three cases (no decision,
@@ -2991,7 +2991,62 @@ enabled, disabled). `sylvia-bridge/test/diagnostics.test.mjs` (9) covers the
 tool: status/enable/disable, the `needsRestart` wording, an unreachable daemon,
 a daemon-side refusal keeping its reason, and a profile with no row.
 
-Daemon `175/175`, bridge `47/47`. One real bug was caught by these tests and
+Daemon `179/179`, bridge `47/47`. One real bug was caught by these tests and
 fixed: the tool's `render` had the wrong arity — the harness calls
 `render(args, value)`, so a value-first renderer always rendered
 `net_diagnostics: failed` while the data underneath was correct.
+
+### 21.6 A wiring bug the tests could not see (2026-10-27)
+
+The supervisor shipped with `createServices({ config, logger })` at the call
+site — `run` was never passed. `pidsFor()` opens with `if (typeof run !==
+"function") return [];`, so **every** service returned an empty pid list, and
+`inspect()`'s rule (`open && pids.length === 0` → `conflict`) labelled each
+listening port as held by an unknown process. On the AVD this made Sylvia
+accuse *its own daemon and its own 9router* of squatting their own ports: the
+loudest possible false alarm from the one component whose job is telling owners
+apart, and a direct contradiction of the goal ("no duplicates fighting over
+ports") — a `conflict` verdict is exactly what stops the supervisor adopting a
+process it actually owns.
+
+The unit tests all passed throughout, because each one injects its own `run`
+stub; the defect lived only in the wiring at the call site. Two tests now pin
+it: that a `run`-less supervisor finds no pids *and* that the same supervisor
+finds them once `run` is supplied, plus `inspect()` on a held port with no
+matching process still reporting `conflict` (the real case the verdict exists
+for). Verified on the AVD afterwards:
+
+| service | port | state | owner | pids |
+| --- | --- | --- | --- | --- |
+| harness | 3080 | running | external | 7034 |
+| mitm | 8080 | stopped | — | — |
+| nine-router | 20128 | running | adopted | 6776 |
+| sillytavern | 8000 | stopped | — | — |
+| daemon | 3090 | running | adopted | 6757 |
+
+Zero conflicts, exactly one harness and one daemon process. Note `ownedPids`
+stays empty for an adopted process while `owner: "adopted"` explains it:
+`ownedPids` is only "pids this daemon instance spawned", and claiming a
+predecessor's child would be worse than admitting it.
+
+### 21.7 Module availability is a platform verdict (2026-10-27)
+
+`module.json` may declare `available: false` with a required
+`unavailableReason`. The validator rejects a non-boolean `available`, an empty
+reason, and `available: false` without one. The field is read in three places,
+because a declaration nobody reads is decoration: `list()` reports it,
+`start(id)` refuses with the reason **before spawning** (so `lastDesired` never
+latches `on` for something that can never run), and `autoStart()` skips it
+silently (a module already latched `on` by an older build stops producing a
+failure on every boot). The panel renders a disabled `Unavailable` button
+carrying the reason instead of `On`, and an `Unavailable` row in the detail
+list.
+
+`mdns` is the first declaration: Android ships neither `avahi-daemon` nor
+`mdnsd`, because mDNS there belongs to the framework's Network Service
+Discovery and no shell process can drive it. That module had also been
+*lying* — `modules/mdns/scripts/on.sh` wrote its refusal through a heredoc,
+mksh staged the heredoc in unwritable `/data/local`, and the script exited 0,
+so the manager kept restarting a module that could never work. It now prints
+plain `echo >&2` lines and exits 2; verified on-device.
+

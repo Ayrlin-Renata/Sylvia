@@ -45,7 +45,7 @@ function defaultKill(pid, signal) {
 // Validate one module.json. Returns { ok: true, manifest } or { ok: false, error }.
 export function validateManifest(raw, dirName) {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: "module.json is not an object" };
-	const { id, name, behavior, frontend, settingsSchema, backup, scripts, service } = raw;
+	const { id, name, behavior, frontend, settingsSchema, backup, scripts, service, available, unavailableReason } = raw;
 	if (typeof id !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(id)) return { ok: false, error: `invalid id: ${JSON.stringify(id)}` };
 	if (dirName && id !== dirName) return { ok: false, error: `id "${id}" does not match directory "${dirName}"` };
 	if (typeof name !== "string" || !name) return { ok: false, error: "name is required" };
@@ -56,6 +56,22 @@ export function validateManifest(raw, dirName) {
 	// instead of spawning a second one onto the same port (§21).
 	if (service != null && (typeof service !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(service))) {
 		return { ok: false, error: `service must be a services.js def name, got ${JSON.stringify(service)}` };
+	}
+	// Optional: a PLATFORM verdict, not a user preference. `available: false`
+	// declares that this module cannot run on the current platform at all (the
+	// mDNS case: Android ships neither avahi-daemon nor mdnsd, and no shell
+	// process can drive the framework's NSD). start() refuses with the reason
+	// instead of spawning a script that is guaranteed to fail, and the panel
+	// shows the verdict. Absent/true means "assume runnable" — the module's own
+	// scripts remain the authority at runtime.
+	if (available !== undefined && typeof available !== "boolean") {
+		return { ok: false, error: `available must be a boolean, got ${JSON.stringify(available)}` };
+	}
+	if (unavailableReason !== undefined && (typeof unavailableReason !== "string" || !unavailableReason)) {
+		return { ok: false, error: "unavailableReason must be a non-empty string" };
+	}
+	if (available === false && unavailableReason === undefined) {
+		return { ok: false, error: "available:false requires unavailableReason (say WHY, so the panel can explain itself)" };
 	}
 
 	if (settingsSchema !== undefined) {
@@ -82,7 +98,7 @@ export function validateManifest(raw, dirName) {
 		}
 	}
 
-	return { ok: true, manifest: { id, name, behavior, frontend: frontend ?? undefined, settingsSchema: settingsSchema ?? [], backup, scripts: scripts ?? {}, service: service ?? undefined } };
+	return { ok: true, manifest: { id, name, behavior, frontend: frontend ?? undefined, settingsSchema: settingsSchema ?? [], backup, scripts: scripts ?? {}, service: service ?? undefined, available: available !== false, unavailableReason: unavailableReason ?? undefined } };
 }
 
 export class ModuleManager {
@@ -167,6 +183,11 @@ export class ModuleManager {
 				behavior: mod.manifest.behavior,
 				// Which supervisor service this module IS (§21), if any.
 				service: mod.manifest.service,
+				// Platform verdict from module.json: false means "cannot run
+				// here at all", with the reason the panel should quote. The
+				// scripts stay the runtime authority; this is the declared one.
+				available: mod.manifest.available !== false,
+				unavailableReason: mod.manifest.unavailableReason,
 				frontend: mod.manifest.frontend,
 				settingsSchema: mod.manifest.settingsSchema,
 				settings: saved.settings ?? {},
@@ -195,6 +216,13 @@ export class ModuleManager {
 
 	async start(id) {
 		const mod = this._get(id);
+		// A module declared unavailable on this platform must not be spawned:
+		// its on script is guaranteed to fail (and, historically, could fail
+		// while still exiting 0 — see modules/mdns/scripts/on.sh). Refusing here
+		// keeps `lastDesired` from latching "on" for something that can never run.
+		if (mod.manifest.available === false) {
+			throw new Error(`module ${id} is not available on this platform: ${mod.manifest.unavailableReason}`);
+		}
 		const rel = mod.manifest.scripts.on;
 		if (!rel || mod.missingScripts.includes("on")) throw new Error(`module ${id} has no on script`);
 		const rt = this.runtime.get(id) ?? { pid: null, startedAt: null, lastError: null };
@@ -397,6 +425,11 @@ export class ModuleManager {
 	async autoStart() {
 		for (const [id, mod] of this.modules) {
 			try {
+				if (mod.manifest.available === false) {
+					// Never even consider it: an unavailable module that latched
+					// lastDesired=on would otherwise fail on every single boot.
+					continue;
+				}
 				if (mod.manifest.behavior === "always") {
 					await this.start(id);
 				} else if (mod.manifest.behavior === "manual") {

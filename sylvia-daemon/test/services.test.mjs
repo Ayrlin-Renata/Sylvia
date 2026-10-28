@@ -160,3 +160,33 @@ test("state file is written 0600 with a version", async (t) => {
 	const body = JSON.parse(fs.readFileSync(file, "utf8"));
 	assert.equal(body.version, 1);
 });
+
+test("without a run dependency no pid is ever found — the wiring is load-bearing", async (t) => {
+	const dir = tmpState(t);
+	// This is the bug that shipped: index.js called createServices({config,
+	// logger}) with no `run`, so pidsFor() hit its guard, returned [], and every
+	// service that was merely LISTENING (Sylvia's own daemon included) was
+	// reported `conflict`. Pin the failure mode so the call site cannot silently
+	// regress into it again — and pin the reason it is invisible: the port is
+	// open, so only the pid lookup differs.
+	const noRun = createServices({ config: CONFIG(dir), portOpen: async () => true });
+	assert.deepEqual(await noRun.pidsFor("9router"), []);
+	const withRun = createServices({ config: CONFIG(dir), run: pgrepStub({ "9router": [4242] }), portOpen: async () => true });
+	assert.deepEqual(await withRun.pidsFor("9router"), [4242]);
+});
+
+test("inspect: a held port with no matching process is a conflict, not a running service", async (t) => {
+	const dir = tmpState(t);
+	// portOpen true + pgrep finding nothing = somebody else owns the port.
+	const squatted = createServices({ config: CONFIG(dir), run: pgrepStub({}), portOpen: async () => true });
+	const seen = await squatted.inspect("nine-router");
+	assert.equal(seen.listening, true);
+	assert.deepEqual(seen.pids, []);
+	assert.equal(seen.state, "conflict");
+	// Once a matching process IS found, the very same port is a normal running
+	// service — this is the transition the missing `run` dependency broke.
+	const owned = createServices({ config: CONFIG(dir), run: pgrepStub({ "9router": [7] }), portOpen: async () => true });
+	const ok = await owned.inspect("nine-router");
+	assert.equal(ok.state, "running");
+	assert.deepEqual(ok.pids, [7]);
+});

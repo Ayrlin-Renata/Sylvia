@@ -108,6 +108,18 @@ test("validateManifest: rejects structural problems with clear errors", () => {
 	assert.match(bad((m) => { m.scripts = { on: "/abs/path.sh" }; }).error, /escapes the module directory|relative path/);
 	assert.match(bad((m) => { m.scripts = { on: "../../evil.sh" }; }).error, /escapes the module directory/);
 	assert.match(bad((m) => { m.scripts = { on: 42 }; }).error, /must be a relative path/);
+	// available/unavailableReason: a platform verdict must carry its reason.
+	assert.match(bad((m) => { m.available = "no"; }).error, /available must be a boolean/);
+	assert.match(bad((m) => { m.available = false; }).error, /available:false requires unavailableReason/);
+	assert.match(bad((m) => { m.available = false; m.unavailableReason = ""; }).error, /unavailableReason must be a non-empty string/);
+	// absent means "assume runnable"; the reason rides along when given.
+	const okAvail = validateManifest({ ...baseManifest }, "demo");
+	assert.equal(okAvail.ok, true);
+	assert.equal(okAvail.manifest.available, true, "no `available` field means runnable");
+	const okUnavail = validateManifest({ ...baseManifest, available: false, unavailableReason: "no responder exists here" }, "demo");
+	assert.equal(okUnavail.ok, true);
+	assert.equal(okUnavail.manifest.available, false);
+	assert.equal(okUnavail.manifest.unavailableReason, "no responder exists here");
 });
 
 test("behave enumerations stay locked (§9.4 / §5 types)", () => {
@@ -140,6 +152,57 @@ test("discover: declared scripts that are missing are reported per-module", asyn
 	await mgr.discover();
 	const list = await mgr.list();
 	assert.equal(list[0].missingScripts.sort().join(","), "backup,off,on,status,settingsEdit".split(",").sort().join(","));
+	await rm(root, { recursive: true, force: true });
+});
+
+// ---- available (platform verdict) --------------------------------------------
+
+test("available:false is reported in list() and start() refuses with the reason", async () => {
+	const REASON = "Android ships neither avahi-daemon nor mdnsd";
+	const root = await makeModulesDir({ unusable: { ...baseManifest, id: "unusable", available: false, unavailableReason: REASON } });
+	// the on script EXISTS, so the refusal cannot be blamed on missingScripts
+	await writeFile(path.join(root, "unusable", "scripts", "on.sh"), "#!/bin/sh\nexit 2\n");
+
+	const pids = new Set();
+	const { spawnFn, calls } = fakeSpawn(pids);
+	const { exec } = fakeExec();
+	const writes = {};
+	const store = { read: (n, fb) => writes[n] ?? fb, write: (n, v) => { writes[n] = v; } };
+	const mgr = new ModuleManager({ modulesDir: root, store, log: () => {}, exec, spawnFn, killFn: fakeKill(pids) });
+	await mgr.discover();
+
+	const list = await mgr.list();
+	assert.equal(list[0].available, false);
+	assert.equal(list[0].unavailableReason, REASON);
+
+	await assert.rejects(() => mgr.start("unusable"), (e) => {
+		assert.match(e.message, /is not available on this platform/);
+		assert.ok(e.message.includes(REASON), "the refusal must quote the declared reason");
+		return true;
+	});
+	assert.equal(calls.length, 0, "an unavailable module must never be spawned");
+	assert.equal(writes["module-unusable.json"], undefined, "and must not latch lastDesired=on");
+
+	await rm(root, { recursive: true, force: true });
+});
+
+test("autoStart: an unavailable module is skipped even with lastDesired=on", async () => {
+	const root = await makeModulesDir({ unusable: { ...baseManifest, id: "unusable", available: false, unavailableReason: "not on this platform" } });
+	await writeFile(path.join(root, "unusable", "scripts", "on.sh"), "#!/bin/sh\ntrue\n");
+
+	const pids = new Set();
+	const { spawnFn, calls } = fakeSpawn(pids);
+	const { exec } = fakeExec();
+	// the saved state says "on" — exactly the latched state that used to retry forever
+	const store = { read: (n, fb) => (n === "module-unusable.json" ? { lastDesired: "on" } : fb), write: () => {} };
+	const logs = [];
+	const mgr = new ModuleManager({ modulesDir: root, store, log: (m) => logs.push(m), exec, spawnFn, killFn: fakeKill(pids) });
+	await mgr.discover();
+	await mgr.autoStart();
+
+	assert.equal(calls.length, 0, "no spawn for an unavailable module");
+	assert.deepEqual(logs, [], "and no failure noise either — it is skipped, not attempted");
+
 	await rm(root, { recursive: true, force: true });
 });
 

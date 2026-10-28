@@ -2,6 +2,8 @@
 	"id": "mdns",
 	"name": "mDNS responder",
 	"behavior": "manual",
+	"available": false,
+	"unavailableReason": "Android ships neither an avahi-daemon nor an mdnsd CLI — mDNS there is the framework's Network Service Discovery, which no shell process can drive. Run your own userspace responder if you need mDNS.",
 	"frontend": null,
 	"settingsSchema": [
 		{ "key": "serviceNames", "type": "string", "label": "Advertised service names (comma-separated)", "default": "" },

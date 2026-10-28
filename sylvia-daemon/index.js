@@ -20,6 +20,7 @@ import { createA2AProxy } from "./src/a2aproxy.js";
 import { createServices } from "./src/services.js";
 import { createMitmToggle } from "./src/mitm.js";
 import { defaultAuditPath, loadDaemonSecrets } from "./src/secrets.js";
+import { run } from "./src/run.js";
 import path from "node:path";
 
 const log = makeLog();
@@ -64,7 +65,13 @@ export async function main(env = process.env) {
 
 	// Process ownership (§21). Created BEFORE the module manager so a module
 	// can ask "is this port already mine?" instead of spawning a duplicate.
-	const services = createServices({ config, logger: { info: log, warn: log } });
+	// `run` is REQUIRED here, not a nicety: pidsFor() shells out to `pgrep -f`
+	// to find the process behind a port, and without it every service that is
+	// merely LISTENING looks ownerless — inspect() then reports `conflict` for
+	// Sylvia's own daemon and its own modules (the port is held, but no
+	// matching pid can be found), which is the loudest possible false alarm
+	// from the component whose whole job is to tell owners apart.
+	const services = createServices({ config, run, logger: { info: log, warn: log } });
 	const mitm = createMitmToggle({ config, services, logger: { info: log, warn: log } });
 
 	// Module manager (§9) — local services formalized as modules.

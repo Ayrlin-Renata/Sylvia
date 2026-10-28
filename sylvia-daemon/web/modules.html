@@ -81,10 +81,15 @@ function renderSettings(mod) {
 
 function card(m) {
 	const actions = [];
+	const available = m.available !== false;
 	actions.push(`<button data-act="status">Status</button>`);
+	// An unavailable module cannot be started, so offering "On" would only
+	// produce a failure the operator already knows about.
 	actions.push(m.running
 		? `<button data-act="off">Off</button>`
-		: `<button data-act="on">On</button>`);
+		: available
+			? `<button data-act="on">On</button>`
+			: `<button disabled title="${esc(m.unavailableReason ?? "not available on this platform")}">Unavailable</button>`);
 	if (m.frontend) actions.push(`<button data-act="open">Open frontend</button>`);
 	if (m.scripts?.backup) actions.push(`<button data-act="backup">Backup now</button>`);
 	if ((m.settingsSchema ?? []).length > 0) actions.push(`<button data-act="toggle-settings">Settings</button>`);
@@ -94,6 +99,7 @@ function card(m) {
 		<dl class="kv">
 			<dt>ID</dt><dd>${esc(m.id)}</dd>
 			<dt>Behavior</dt><dd><span class="badge neutral">${esc(m.behavior ?? "manual")}</span></dd>
+			${available ? "" : `<dt>Unavailable</dt><dd style="color:var(--bad)">${esc(m.unavailableReason ?? "not available on this platform")}</dd>`}
 			${m.frontend ? `<dt>Frontend</dt><dd>${esc(m.frontend)}</dd>` : ""}
 			${m.lastError ? `<dt>Last error</dt><dd style="color:var(--bad)">${esc(m.lastError)}</dd>` : ""}
 		</dl>
