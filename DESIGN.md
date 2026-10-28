@@ -3050,3 +3050,40 @@ mksh staged the heredoc in unwritable `/data/local`, and the script exited 0,
 so the manager kept restarting a module that could never work. It now prints
 plain `echo >&2` lines and exits 2; verified on-device.
 
+## 21.8 Verification, and the daemon's vault key file (2026-10-27)
+
+The §21 wave was verified on the AVD rather than assumed, and the run found
+one further defect in the supervisor (on top of the wiring bug in §21.6) plus
+one gap in the daemon's vault reader.
+
+**The supervisor was reporting false conflicts** — the §21.6 wiring bug, seen
+from the outside. `GET /api/services` showed every port held by an unmatched
+process, which would have refused legitimate starts, because `createServices`
+had been called without the `run` function the probe injects. With `run`
+threaded through, a real launcher boot now reports five services honestly —
+`harness :3080 running owner=adopted pid=7034`, `nine-router :20128 running
+owner=adopted pid=11963`, `daemon :3090 running owner=adopted pid=11944`,
+`mitm :8080 stopped`, `sillytavern :8000 stopped` — with **zero conflicts**,
+and `pgrep` confirms exactly one process of each. The EADDRINUSE
+duplicate-harness failure that started §21 cannot recur while the supervisor
+classifies correctly, because the harness start path now sees a live owner
+and adopts it instead of spawning a second server.
+
+**The daemon can unlock the vault from the key file.** A daemon started by
+hand (`setsid nohup node index.js` from an adb shell) inherits no exported
+passphrase, and the boot log said `a2a: no admin token (neither the
+environment nor the vault has one) — the panel's A2A controls will report
+503` while `~/.sylvia/.secret-key` sat next to the vault. The plugin had
+always read that file; the daemon's mirror did not. `loadDaemonSecrets` now
+takes `keyFile` (`a2aVaultKeyFile`, `SYLVIA_A2A_VAULT_KEY_FILE`, defaulting
+to `<vault dir>/.secret-key`) and consults it **only** when the variable is
+empty, so a deliberate export always wins. A missing file stays non-fatal:
+the proxy answers 503 with a reason instead of failing to boot. With no
+environment at all the device now logs `a2a: admin token read from the
+encrypted vault` and writes its own tripwire line
+(`source=daemon:vault secrets=[NUNCIA_ADMIN_TOKEN]`).
+
+The lesson worth keeping: an "environment or vault" resolution order is
+wrong for a process that can be started by hand — the durable location, not
+the convenient one, has to be in the chain. Daemon suite 182/182.
+
