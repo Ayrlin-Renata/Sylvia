@@ -1449,26 +1449,25 @@ BUNDLES_EOF
 # The plugin is PLAIN ESM, not an npm package, so cordis has to be able to
 # resolve the bare name `dsh-nuncia` from the profile. It ALSO has to resolve
 # its ambient peers (`schemastery`, `@deepseek-ai/dsh-llm`, `dsh-session`) and
-# its own deps (@a2a-js/sdk), which live in node_modules beside the source.
+# its own deps (@a2a-js/sdk) from somewhere. WHERE they come from is what makes
+# the topologies differ, and two of the three are correct:
 #
-# That second requirement decides the topology: the profile must reach the
-# SOURCE TREE, because a bare copy of lib/ has no node_modules and dies with
-# "Cannot find package 'schemastery'". So the symlink is not a stylistic choice
-# — it is the only deployment that works, and what a copy does instead is
-# produce a build that resolves right up until it imports its first peer.
+#   (a) SYMLINK — node_modules/dsh-nuncia -> $SYLVIA_HOME/dsh-nuncia. The source
+#       tree is the live code and carries its OWN node_modules (the ambient
+#       links seeded on-device), so peers resolve beside the plugin.
 #
-#   (a) SYMLINK — node_modules/dsh-nuncia -> $SYLVIA_HOME/dsh-nuncia. Correct:
-#       the source tree IS the live code and brings its node_modules with it.
-#       (The profile's package.json usually also carries
-#       `"dsh-nuncia": "file:<abs path>"`.)
-#   (b) COPY — a real directory. Tolerated for backwards compatibility with
-#       hand-deployed hosts, refreshed from the source, and then TOLD PLAINLY
-#       that it cannot resolve ambient peers. Silently leaving a copy in place
-#       is what produced the "stale build, no mount, missing routes" class of
-#       bug this module exists to prevent.
+#   (b) INSTALLED — a real directory whose peers resolve UPWARD from the
+#       profile's node_modules (the desktop node: `"dsh-nuncia":
+#       "github:Ayrlin-Renata/dsh-nuncia"`, with schemastery/@a2a-js/dsh-llm
+#       all present at profile level). Perfectly correct; leave it alone.
 #
-# Verify whichever topology is present, and never report success on a topology
-# we did not actually confirm.
+#   (c) BARE COPY — a real directory with NO peers reachable either way. This
+#       is the broken one, and it fails only at import time with "Cannot find
+#       package 'schemastery'". Refreshing its files does not help.
+#
+# So: verify the symlink target when there is a symlink, refresh files when
+# there is not, and in both cases PROVE peers resolve before calling it good.
+# Never report success on a topology we did not actually confirm.
 module_nuncia_plugin() {
   CURRENT_MODULE="nuncia plugin"
   local src="$SYLVIA_HOME/dsh-nuncia"
@@ -1496,16 +1495,12 @@ module_nuncia_plugin() {
       ok "dsh-nuncia symlink repointed at the source tree"
     fi
   else
-    # Topology (b): a real directory. Refresh it so it at least matches the
-    # source, then say what it cannot do. bin/ is needed on-device so
-    # `nuncia-secrets`/`nuncia-token`/`nuncia-identity` work from the shell.
-    # cordis.patch.yml is DELIBERATELY excluded: it is a commented template for
-    # humans, never read by the plugin (the live config is the profile's own
-    # file), and nodes legitimately trim it, so copying it would churn forever.
-    if [ -d "$dest" ]; then
-      warn "dsh-nuncia is a real DIRECTORY, not a symlink to the source tree"
-      note "a copy cannot resolve the plugin's ambient peers (schemastery, @deepseek-ai/dsh-llm, …) — run: ln -sfn $src $dest"
-    fi
+    # Topology (b)/(c): a real directory. Refresh it so it at least matches the
+    # source. bin/ is needed on-device so `nuncia-secrets`/`nuncia-token`/
+    # `nuncia-identity` work from the shell. cordis.patch.yml is DELIBERATELY
+    # excluded: it is a commented template for humans, never read by the plugin
+    # (the live config is the profile's own file), and nodes legitimately trim
+    # it, so copying it would churn forever.
     local parts=(lib bin package.json README.md)
     local p changed=0
 
