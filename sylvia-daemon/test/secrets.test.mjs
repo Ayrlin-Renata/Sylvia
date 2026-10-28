@@ -12,10 +12,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createCipheriv, randomBytes, scryptSync } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname as dirOf, join } from "node:path";
 
-import { decryptVault, defaultAuditPath, defaultVaultPath, loadDaemonSecrets, resolveAdminToken } from "../src/secrets.js";
+import { decryptVault, defaultAuditPath, defaultKeyFile, defaultVaultPath, loadDaemonSecrets, resolveAdminToken } from "../src/secrets.js";
 
 const PASSPHRASE = "daemon vault passphrase";
 
@@ -145,10 +145,59 @@ test("the key env var is a NAME, so a custom name works", () => {
 	assert.equal(loaded.token, "from-vault");
 });
 
-test("a missing key env var leaves the daemon without a token", () => {
+test("a missing key env var leaves the daemon without a token when no key file exists either", () => {
 	const { file } = scratch();
 	writeVault(file, { NUNCIA_ADMIN_TOKEN: "from-vault" }, PASSPHRASE);
-	const loaded = loadDaemonSecrets({ stateDir: undefined, envToken: "", vaultFile: file, keyEnv: "NOT_SET", env: {} });
+	// keyFile points at a path that does not exist, so there is genuinely no
+	// way in: the daemon reports "none" rather than guessing.
+	const loaded = loadDaemonSecrets({
+		stateDir: undefined,
+		envToken: "",
+		vaultFile: file,
+		keyFile: join(dirOf(file), "no-such-key"),
+		keyEnv: "NOT_SET",
+		env: {}
+	});
 	assert.equal(loaded.token, "");
 	assert.equal(loaded.source, "none");
+});
+
+test("the daemon reads the passphrase FILE when the variable is absent", () => {
+	// This is the hand-started case: `setsid nohup node index.js` from an adb
+	// shell inherits no exported variable, but the installer leaves the
+	// passphrase beside the vault. Without this fallback the daemon reports
+	// "neither the environment nor the vault has one" while the key it needs
+	// sits on disk.
+	const { file } = scratch();
+	writeVault(file, { NUNCIA_ADMIN_TOKEN: "from-vault" }, PASSPHRASE);
+	const keyFile = join(dirOf(file), "key.txt");
+	// Trailing newline: the installer writes it with echo/printf.
+	writeFileSync(keyFile, `${PASSPHRASE}\n`, { mode: 0o600 });
+
+	const loaded = loadDaemonSecrets({ stateDir: undefined, envToken: "", vaultFile: file, keyFile, env: {} });
+	assert.equal(loaded.token, "from-vault");
+	assert.equal(loaded.source, "vault");
+});
+
+test("an exported variable still wins over the key file", () => {
+	const { file } = scratch();
+	writeVault(file, { NUNCIA_ADMIN_TOKEN: "from-vault" }, PASSPHRASE);
+	const keyFile = join(dirOf(file), "key.txt");
+	writeFileSync(keyFile, "a-wrong-passphrase\n", { mode: 0o600 });
+	const loaded = loadDaemonSecrets({
+		stateDir: undefined,
+		envToken: "",
+		vaultFile: file,
+		keyFile,
+		env: { SYLVIA_SECRET_KEY: PASSPHRASE }
+	});
+	// The wrong file cannot even be reached, because the environment answered
+	// first - a stale key file must never override a deliberate export.
+	assert.equal(loaded.token, "from-vault");
+	assert.equal(loaded.source, "vault");
+});
+
+test("defaultKeyFile sits beside the vault", () => {
+	assert.equal(defaultKeyFile("/tmp/state"), join("/tmp/state", ".secret-key"));
+	assert.equal(defaultKeyFile(undefined), join(homedir(), ".sylvia", ".secret-key"));
 });

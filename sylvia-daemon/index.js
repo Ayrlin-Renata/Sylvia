@@ -132,6 +132,7 @@ export async function main(env = process.env) {
 		envToken: config.a2aAdminToken,
 		vaultFile: config.a2aVaultFile,
 		keyEnv: config.a2aVaultKeyEnv,
+		keyFile: config.a2aVaultKeyFile,
 		auditFile: config.a2aVaultAuditFile || defaultAuditPath(config.stateDir),
 		env: process.env
 	});

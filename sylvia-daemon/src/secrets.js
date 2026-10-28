@@ -23,6 +23,18 @@ export function defaultVaultPath(stateDir) {
 }
 
 /**
+ * The default passphrase-file location, beside the vault it opens. The
+ * installer writes this file (mode 600) so a process can unlock the vault
+ * without the secret appearing in its environment.
+ *
+ * @param {string} [stateDir]
+ * @returns {string}
+ */
+export function defaultKeyFile(stateDir) {
+	return join(stateDir || join(homedir(), ".sylvia"), ".secret-key");
+}
+
+/**
  * The default audit-trail location — the tripwire log that records every
  * vault decryption.
  *
@@ -130,14 +142,48 @@ export function recordDaemonSecretAccess(auditFile, detail) {
 export function loadDaemonSecrets(options = {}) {
 	const env = options.env || process.env;
 	const vaultFile = options.vaultFile || defaultVaultPath(options.stateDir);
-	const passphrase = env[options.keyEnv || SECRET_KEY_ENV];
+	// The passphrase normally arrives as an exported variable, but a daemon
+	// started by hand (setsid nohup node index.js from an adb shell) inherits
+	// no such environment, and then it would report "neither the environment
+	// nor the vault has one" while a perfectly good key file sits next to the
+	// vault. Read that file as well — it is how the installer leaves the
+	// secret, and the plugin already does this.
+	const envPassphrase = env[options.keyEnv || SECRET_KEY_ENV];
+	const passphrase = firstNonEmpty(
+		typeof envPassphrase === "string" ? envPassphrase : undefined,
+		readPassphraseFile(options.keyFile || defaultKeyFile(options.stateDir))
+	);
 	const resolved = resolveAdminToken({
 		envToken: options.envToken ?? env.NUNCIA_ADMIN_TOKEN,
 		vaultFile,
-		passphrase: typeof passphrase === "string" && passphrase !== "" ? passphrase : undefined
+		passphrase
 	});
 	if (resolved.source === "vault") {
 		recordDaemonSecretAccess(options.auditFile || defaultAuditPath(options.stateDir), { source: "daemon:vault", values: ["NUNCIA_ADMIN_TOKEN"] });
 	}
-	return { ...resolved, vaultFile, passphrase: typeof passphrase === "string" ? passphrase : undefined };
+	return { ...resolved, vaultFile, passphrase };
+}
+
+/** The first argument that is a non-empty string, else undefined. */
+function firstNonEmpty(...values) {
+	for (const v of values) if (typeof v === "string" && v !== "") return v;
+	return undefined;
+}
+
+/**
+ * Read a passphrase file, tolerating a trailing newline and surrounding
+ * whitespace (the installer writes it with `echo`/`printf`, so both are seen)
+ * and returning undefined for anything unreadable.
+ *
+ * @param {string} file
+ * @returns {string|undefined}
+ */
+export function readPassphraseFile(file) {
+	try {
+		if (!existsSync(file)) return undefined;
+		const text = readFileSync(file, "utf8").trim();
+		return text === "" ? undefined : text;
+	} catch {
+		return undefined;
+	}
 }
